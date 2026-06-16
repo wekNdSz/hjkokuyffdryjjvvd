@@ -449,7 +449,360 @@ def telegram_scheduler_worker():
             print(f"[Поток] Ошибка: {e}")
 
 # (HTML_TEMPLATE остается неизменным, как в исходном коде)
-HTML_TEMPLATE = """...""" # Скопируй сюда полностью строковый HTML шаблон из твоего вопроса
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>SteamGamesList-api</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #dfd4c9; 
+            --header-bg: #ffffff; 
+            --grid-skin: #dfd4c9;
+            --text-color: #000000;
+            --white: #ffffff;
+            --gray: #7a7a7a;
+            --green: #4caf50;
+            --border-pixel: 4px solid var(--text-color);
+        }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Press Start 2P', monospace;
+            image-rendering: pixelated;
+        }
+        
+        @keyframes gridScrollDown {
+            0% { background-position: 0 0; }
+            100% { background-position: 0 32px; }
+        }
+
+        body {
+            background-color: var(--bg-color);
+            background-image: 
+                linear-gradient(rgba(255, 255, 255, 0.25) 2px, transparent 2px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.25) 2px, transparent 2px);
+            background-size: 32px 32px;
+            animation: gridScrollDown 5s linear infinite;
+            color: var(--text-color);
+            padding-top: 145px;
+            padding-bottom: 80px;
+            overflow-x: hidden;
+        }
+        
+        header {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 115px;
+            background-color: var(--header-bg);
+            background-image: 
+                linear-gradient(var(--grid-skin) 2px, transparent 2px),
+                linear-gradient(90deg, var(--grid-skin) 2px, transparent 2px);
+            background-size: 32px 32px;
+            animation: gridScrollDown 5s linear infinite;
+            border-bottom: var(--border-pixel);
+            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+            z-index: 999999;
+        }
+        .header-title {
+            font-size: 16px; font-weight: bold; text-align: center;
+            background: var(--white); padding: 2px 6px; border: 2px solid var(--text-color);
+        }
+        
+        .custom-select-wrapper { position: relative; display: inline-block; user-select: none; }
+        .custom-select-trigger { font-size: 11px; background: var(--white); border: var(--border-pixel); padding: 8px 16px; cursor: pointer; }
+        .custom-options {
+            position: absolute; display: block; top: 100%; left: 50%; width: 150px;
+            border: var(--border-pixel); border-top: none; background: var(--white); z-index: 100000;
+            transform-origin: top; transform: translateX(-50%) scaleY(0); opacity: 0; pointer-events: none;
+            transition: transform 0.22s cubic-bezier(0.175, 0.885, 0.32, 1.2), opacity 0.18s ease;
+        }
+        .custom-select-wrapper.open .custom-options { transform: translateX(-50%) scaleY(1); opacity: 1; pointer-events: auto; }
+        .custom-option { font-size: 10px; padding: 12px; cursor: pointer; background: var(--white); text-align: center; border-bottom: 2px dashed var(--gray); }
+        .custom-option:last-child { border-bottom: none; }
+        .custom-option:hover { background: var(--bg-color); }
+
+        .container { width: 100%; max-width: 850px; margin: 0 auto; padding: 0 15px; }
+        .section-title { font-size: 12px; margin: 40px 0 20px 0; text-align: center; line-height: 1.6; }
+        
+        /* Особый стиль для блока НОВОЕ! */
+        .section-title.fresh-title {
+            background-color: var(--green);
+            color: var(--white);
+            border: var(--border-pixel);
+            padding: 10px;
+            display: inline-block;
+            margin: 40px auto 20px auto;
+            left: 50%; transform: translateX(-50%); position: relative;
+        }
+
+        .game-card {
+            background-color: #fffbf7; border: var(--border-pixel); display: flex; margin-bottom: 25px;
+            min-height: 115px; position: relative; box-shadow: 6px 6px 0px rgba(0,0,0,0.15);
+            transform: scale(0.85); opacity: 0;
+        }
+        .game-card.active-card { z-index: 99999 !important; }
+        
+        .game-img-wrapper { width: 35%; min-width: 115px; max-width: 200px; border-right: var(--border-pixel); background: var(--gray); flex-shrink: 0; }
+        .game-img-wrapper img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        
+        .game-info { flex: 1; padding: 14px; display: flex; flex-direction: column; justify-content: space-between; position: relative; min-width: 0; }
+        .game-title { font-size: 11px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 30px; font-weight: bold; }
+        .game-details { display: flex; align-items: center; justify-content: flex-start; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+        
+        .badge {
+            font-size: 8px; height: 24px; padding: 0 6px; background: var(--white);
+            border: 2px solid var(--text-color); display: inline-flex; align-items: center; justify-content: center; 
+        }
+        .badge.discount { background: #ffeb3b; }
+        .badge.price { background: #ff5722; color: var(--white); }
+        .badge.price-free { background: var(--green) !important; color: var(--white) !important; font-weight: bold; }
+        .badge.fresh-tag { background: var(--green); color: var(--white); font-weight: bold; }
+
+        .dots-menu-btn {
+            position: absolute; top: 12px; right: 14px; width: 24px; height: 24px; cursor: pointer;
+            display: flex; flex-direction: column; justify-content: space-between; align-items: center; padding: 3px 0; z-index: 100;
+        }
+        .dots-menu-btn span { width: 5px; height: 5px; background-color: var(--text-color); }
+        
+        .card-context-menu {
+            position: absolute; top: 42px; right: 14px; background: var(--white); border: var(--border-pixel);
+            z-index: 999999; width: 170px; box-shadow: 6px 6px 0px rgba(0,0,0,0.25);
+            transform-origin: top; transform: scaleY(0); opacity: 0; pointer-events: none;
+            transition: transform 0.22s cubic-bezier(0.175, 0.885, 0.32, 1.2), opacity 0.18s ease;
+        }
+        .card-context-menu.open { transform: scaleY(1); opacity: 1; pointer-events: auto; }
+        .menu-item { font-size: 9px; padding: 12px; cursor: pointer; border-bottom: 2px solid var(--text-color); }
+        .menu-item:last-child { border-bottom: none; }
+        .menu-item:hover { background: var(--bg-color); }
+        
+        .sub-menu { display: block; max-height: 0; overflow: hidden; background: #fff6ed; transform-origin: top; transition: max-height 0.22s ease-out; }
+        .sub-menu.open { max-height: 150px; }
+        .sub-menu div { padding: 10px; font-size: 8px; text-align: center; cursor: pointer; border-bottom: 1px dashed var(--text-color); }
+        .sub-menu div:last-child { border-bottom: none; }
+        .sub-menu div:hover { background: var(--bg-color); }
+
+        .load-more-btn {
+            background-color: #fffbf7; border: var(--border-pixel); width: 100%; padding: 16px;
+            text-align: center; font-size: 11px; cursor: pointer; margin: 15px 0 50px 0;
+            box-shadow: 4px 4px 0px rgba(0,0,0,0.15); display: block; user-select: none;
+            transition: transform 0.1s ease, box-shadow 0.1s ease;
+        }
+        .load-more-btn:hover { transform: translate(2px, 2px); box-shadow: 2px 2px 0px rgba(0,0,0,0.15); background-color: var(--white); }
+        
+        .bounce-in-active { animation: smoothIn 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.25) forwards; }
+        @keyframes smoothIn {
+            0% { transform: scale(0.85); opacity: 0; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="header-title">SteamGamesList-api</div>
+        <div class="custom-select-wrapper" id="currency-wrapper">
+            <div class="custom-select-trigger" onclick="toggleSelect(event)">
+                <span id="selected-val">{% if current_currency == 'EUR' %}EUR ▾{% elif current_currency == 'USD' %}USD ▾{% else %}RUB ▾{% endif %}</span>
+            </div>
+            <div class="custom-options">
+                <div class="custom-option" onclick="selectGlobalCurrency('EUR')">EUR</div>
+                <div class="custom-option" onclick="selectGlobalCurrency('USD')">USD</div>
+                <div class="custom-option" onclick="selectGlobalCurrency('RUB')">RUB</div>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        {% if fresh_games %}
+        <div class="section-title fresh-title">СВЕЖАЯ ИНФОРМАЦИЯ: НОВОЕ!</div>
+        <div id="fresh-container">
+            {% for entry in fresh_games %}
+            <div class="game-card bounce-in-active" style="opacity: 1; transform: scale(1);">
+                <div class="game-img-wrapper">
+                    <img src="{{ entry.game.img }}" onerror="this.parentNode.style.background='#7a7a7a'">
+                </div>
+                <div class="game-info">
+                    <div class="game-title" title="{{ entry.game.name }}">{{ entry.game.name }}</div>
+                    <div class="game-details">
+                        <span class="badge fresh-tag">НОВОЕ!</span>
+                        <span class="badge discount">{{ entry.game.discount }}</span>
+                        <span class="badge price {% if entry.game.price == 'FREE' %}price-free{% endif %}">{{ entry.game.price }}</span>
+                    </div>
+                    <div class="dots-menu-btn" onclick="toggleCardMenu(event, 'fresh-{{ entry.game.id }}')">
+                        <span></span><span></span><span></span>
+                    </div>
+                    <div class="card-context-menu" id="menu-fresh-{{ entry.game.id }}">
+                        <div class="menu-item" onclick="window.open('https://store.steampowered.com/app//{{ entry.game.id }}', '_blank')">Открыть Steam</div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div id="default-game-sections">
+            <div class="section-title">Дешёвые игры - скидки (50 игр)</div>
+            <div id="discounts-container"></div>
+            <div id="discounts-btn" class="load-more-btn bounce-in-active" onclick="handleLoadMore('discounts')">Ещё?</div>
+
+            <div class="section-title">Топ бесплатных сингл игр</div>
+            <div id="free_single-container"></div>
+            <div id="free_single-btn" class="load-more-btn bounce-in-active" onclick="handleLoadMore('free_single')">Ещё?</div>
+
+            <div class="section-title">Игры со скидками для друзей</div>
+            <div id="coop_disc-container"></div>
+            <div id="coop_disc-btn" class="load-more-btn bounce-in-active" onclick="handleLoadMore('coop_disc')">Ещё?</div>
+
+            <div class="section-title">Бесплатные игры с другом</div>
+            <div id="coop_free-container"></div>
+            <div id="coop_free-btn" class="load-more-btn bounce-in-active" onclick="handleLoadMore('coop_free')">Ещё?</div>
+
+            <div class="section-title">Можно получить бесплатно скоро</div>
+            <div id="upcoming-container"></div>
+            <div id="upcoming-btn" class="load-more-btn bounce-in-active" onclick="handleLoadMore('upcoming')">Ещё?</div>
+        </div>
+    </div>
+
+    <script>
+        const rawData = {{ data_json | safe }};
+        const currentGlobalCurrency = "{{ current_currency }}";
+        
+        const state = {
+            discounts: { data: rawData.discounts || [], index: 0, step: 3, limit: 50 },
+            free_single: { data: rawData.free_single || [], index: 0, step: 3, limit: 14 },
+            coop_disc: { data: rawData.coop_disc || [], index: 0, step: 3, limit: 10 },
+            coop_free: { data: rawData.coop_free || [], index: 0, step: 3, limit: 10 },
+            upcoming: { data: rawData.upcoming || [], index: 0, step: 3, limit: 14 }
+        };
+
+        function toggleSelect(e) { e.stopPropagation(); document.getElementById('currency-wrapper').classList.toggle('open'); }
+        function selectGlobalCurrency(val) { window.location.href = "/?currency=" + val; }
+
+        function toggleCardMenu(e, appId) {
+            e.stopPropagation();
+            const targetMenu = document.getElementById('menu-' + appId);
+            const targetCard = targetMenu.closest('.game-card');
+            const isOpen = targetMenu.classList.contains('open');
+
+            document.querySelectorAll('.card-context-menu').forEach(m => m.classList.remove('open'));
+            document.querySelectorAll('.game-card').forEach(c => c.classList.remove('active-card'));
+
+            if (!isOpen && targetMenu) {
+                targetMenu.classList.add('open');
+                targetCard.classList.add('active-card');
+            }
+        }
+
+        function toggleSubMenu(e, appId) { e.stopPropagation(); document.getElementById('submenu-' + appId).classList.toggle('open'); }
+
+        function changeGameCurrency(appId, targetCurr) {
+            const urlParams = new URLSearchParams(window.location.search);
+            urlParams.set('override_' + appId, targetCurr);
+            if(!urlParams.has('currency')) urlParams.set('currency', currentGlobalCurrency);
+            window.location.href = window.location.pathname + '?' + urlParams.toString();
+        }
+
+        window.addEventListener('click', function() {
+            document.getElementById('currency-wrapper').classList.remove('open');
+            document.querySelectorAll('.card-context-menu').forEach(m => m.classList.remove('open'));
+            document.querySelectorAll('.sub-menu').forEach(s => s.classList.remove('open'));
+            document.querySelectorAll('.game-card').forEach(c => c.classList.remove('active-card'));
+        });
+
+        function createCard(game) {
+            const card = document.createElement('div');
+            card.className = 'game-card';
+            card.dataset.id = game.id;
+            
+            let tagsHtml = '';
+            if(Array.isArray(game.tags)) {
+                game.tags.slice(0, 2).forEach(t => { tagsHtml += `<span class="badge">${t}</span>`; });
+            }
+
+            let priceClass = game.price === "FREE" ? "price price-free" : "price";
+
+            card.innerHTML = `
+                <div class="game-img-wrapper">
+                    <img src="${game.img}" alt="img" onerror="this.parentNode.style.background='#7a7a7a'">
+                </div>
+                <div class="game-info">
+                    <div class="game-title" title="${game.name}">${game.name}</div>
+                    <div class="game-details">
+                        <span class="badge discount">${game.discount}</span>
+                        <span class="badge ${priceClass}">${game.price}</span>
+                        ${tagsHtml}
+                    </div>
+                    <div class="dots-menu-btn" onclick="toggleCardMenu(event, '${game.id}')">
+                        <span></span><span></span><span></span>
+                    </div>
+                    <div class="card-context-menu" id="menu-${game.id}">
+                        <div class="menu-item" onclick="window.open('https://store.steampowered.com/app/${game.id}', '_blank')">Открыть Steam</div>
+                        <div class="menu-item" onclick="toggleSubMenu(event, '${game.id}')">Регион цены ▾</div>
+                        <div class="sub-menu" id="submenu-${game.id}">
+                            <div onclick="changeGameCurrency('${game.id}', 'EUR')">EUR (€)</div>
+                            <div onclick="changeGameCurrency('${game.id}', 'USD')">USD ($)</div>
+                            <div onclick="changeGameCurrency('${game.id}', 'RUB')">RUB (₽)</div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            return card;
+        }
+
+        function renderSection(key) {
+            const section = state[key];
+            const container = document.getElementById(key + '-container');
+            const btn = document.getElementById(key + '-btn');
+
+            let itemsToRender = [];
+            let rendered = 0;
+            while (section.index < section.data.length && section.index < section.limit && rendered < section.step) {
+                itemsToRender.push(section.data[section.index]);
+                section.index++;
+                rendered++;
+            }
+
+            itemsToRender.forEach((game, idx) => {
+                setTimeout(() => {
+                    const card = createCard(game);
+                    container.appendChild(card);
+                    observer.observe(card);
+                }, idx * 60); 
+            });
+
+            const remaining = Math.min(section.limit, section.data.length) - section.index;
+            if (remaining > 0) {
+                btn.style.display = 'block';
+                btn.innerText = `Ещё? (Осталось: ${remaining})`;
+                btn.classList.add('bounce-in-active'); 
+            } else {
+                btn.style.display = 'none';
+            }
+        }
+
+        function handleLoadMore(key) {
+            const btn = document.getElementById(key + '-btn');
+            btn.classList.remove('bounce-in-active');
+            void btn.offsetWidth; 
+            renderSection(key);
+        }
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if(entry.isIntersecting) {
+                    entry.target.classList.add('bounce-in-active');
+                    observer.unobserve(entry.target);
+                }
+            });
+        }, { threshold: 0.05 });
+
+        window.onload = () => { Object.keys(state).forEach(key => renderSection(key)); };
+    </script>
+</body>
+</html>""" # Скопируй сюда полностью строковый HTML шаблон из твоего вопроса
 
 @app.route("/")
 def index():
