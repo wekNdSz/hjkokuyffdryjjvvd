@@ -824,71 +824,63 @@ def index():
     )
 
 # ==================== ОБРАБОТКА КОМАНДЫ /START (WEBHOOK) ====================
+# ==================== ОБРАБОТКА КОМАНДЫ /START (WEBHOOK) С ЛОГАМИ ====================
 @app.route("/telegram-webhook", methods=["POST"])
 def telegram_webhook():
     try:
         update = request.get_json(silent=True)
+        print(f"[Webhook] Получен апдейт от ТГ: {json.dumps(update, ensure_ascii=False)}")
+        
         if not update or "message" not in update:
+            print("[Webhook] Апдейт пустой или не содержит message")
             return "OK", 200
         
         message = update["message"]
         text = message.get("text", "")
         chat_id = message["chat"]["id"]
+        
+        print(f"[Webhook] Текст сообщения: '{text}', Chat ID: {chat_id}")
 
         if text.startswith("/start"):
+            print("[Webhook] Условие /start СРАБОТАЛО. Готовим отправку кнопки...")
             host_url = request.host_url.rstrip('/')
+            print(f"[Webhook] Ссылка для Web App: {host_url}")
             
             welcome_text = (
-                "Привет! 👾 Я бот-радар скрытых скидок и халявы в Steam.\n\n"
-                "Нажми на кнопку ниже, чтобы открыть наше Web App приложение и посмотреть весь список игр!"
+                "Привет!  Я бот скрытых скидок и халявы в Steam.\n\n"
+                "чтобы открыть наше Web App приложение и посмотреть весь список игр!"
             )
             
             reply_markup = {
                 "inline_keyboard": [
                     [
                         {
-                            "text": "🎮 Открыть Web App",
+                            "text": "Открыть  App",
                             "web_app": {"url": host_url}
                         }
                     ]
                 ]
             }
             
-            requests.post(
-                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
-                json={
-                    "chat_id": chat_id,
-                    "text": welcome_text,
-                    "reply_markup": reply_markup
-                },
-                timeout=10
-            )
+            url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": welcome_text,
+                "reply_markup": reply_markup
+            }
+            
+            print(f"[Webhook] Отправка запроса в ТГ... Токен (первые 5 симв): {TG_BOT_TOKEN[:5]}...")
+            res = requests.post(url, json=payload, timeout=10)
+            print(f"[Webhook] Ответ от ТГ на отправку кнопки: Статус {res.status_code}, Ответ: {res.text}")
+        else:
+            print("[Webhook] Это не команда /start, игнорируем.")
             
     except Exception as e:
-        print(f"[Webhook] Ошибка обработки апдейта: {e}")
+        print(f"[Webhook] КРИТИЧЕСКАЯ ОШИБКА В КРИПТЕ: {e}")
         
     return "OK", 200
+# ============================================================================
 
-def set_telegram_webhook():
-    """Автоматическая привязка вебхука к Railway при запуске"""
-    time.sleep(5)
-    railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN") or os.environ.get("RAILWAY_STATIC_URL")
-    
-    if railway_domain:
-        railway_domain = railway_domain.replace("https://", "").replace("http://", "")
-        webhook_url = f"https://{railway_domain}/telegram-webhook"
-        print(f"[Webhook] Попытка установить вебхук на: {webhook_url}")
-        try:
-            res = requests.post(
-                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/setWebhook",
-                json={"url": webhook_url},
-                timeout=10
-            )
-            print(f"[Webhook] Ответ Telegram: {res.json()}")
-        except Exception as e:
-            print(f"[Webhook] Не удалось установить вебхук: {e}")
-    else:
-        print("[Webhook] Ошибка: Не удалось определить домен Railway.")
 # ============================================================================
 
 if __name__ == "__main__":
