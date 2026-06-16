@@ -850,15 +850,15 @@ def telegram_webhook():
             host_url = f"https://{domain}"
             
             welcome_text = (
-                "Привет! 👾 Я бот-радар скрытых скидок и халявы в Steam.\n\n"
-                "Нажми на кнопку ниже, чтобы открыть наше Web App приложение и посмотреть весь список игр!"
+                "Привет! я бот крытых скидок и халявы в Steam.\n\n"
+                "чтобы открыть наше Web App приложение и посмотреть весь список игр!"
             )
             
             reply_markup = {
                 "inline_keyboard": [
                     [
                         {
-                            "text": "🎮 Открыть Web App",
+                            "text": "Открыть",
                             "web_app": {"url": host_url}
                         }
                     ]
