@@ -822,13 +822,12 @@ def index():
         current_currency=global_currency,
         fresh_games=HOT_FRESH_GAMES
     )
-
-if __name__ == "__main__":
-    # ==================== ОБРАБОТКА КОМАНДЫ /START (WEBHOOK) ====================
-@app.route(f"/{TG_BOT_TOKEN}", methods=["POST"])
+# ==================== ОБРАБОТКА КОМАНДЫ /START (WEBHOOK) ====================
+@app.route("/telegram-webhook", methods=["POST"])
 def telegram_webhook():
     try:
-        update = request.get_json()
+        # Проверяем, что запрос пришел именно в формате JSON
+        update = request.get_json(silent=True)
         if not update or "message" not in update:
             return "OK", 200
         
@@ -838,30 +837,24 @@ def telegram_webhook():
 
         # Если пользователь пишет /start
         if text.startswith("/start"):
-            # Получаем домен, который Railway выделил для твоего приложения
-            # Если в переменных окружения его нет, кнопка будет вести на главную,
-            # но лучше, чтобы Railway автоматически подхватывал хост
             host_url = request.host_url.rstrip('/')
             
-            # Текст приветствия
             welcome_text = (
-                "Привет!  Я бот скрытых скидок и халявы в Steam.\n\n"
-                "чтобы открыть наше  приложение и посмотреть весь список игр!"
+                "Привет! Я бот- скрытых скидок и халявы в Steam.\n\n"
+                "чтобы открыть наше приложение и посмотреть весь список игр!"
             )
             
-            # Структура инлайн-кнопки с Web App
             reply_markup = {
                 "inline_keyboard": [
                     [
                         {
-                            "text": " Открыть Web App",
+                            "text": "🎮 Открыть Web App",
                             "web_app": {"url": host_url}
                         }
                     ]
                 ]
             }
             
-            # Отправляем сообщение пользователю
             requests.post(
                 f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
                 json={
@@ -879,11 +872,11 @@ def telegram_webhook():
 
 def set_telegram_webhook():
     """Автоматическая привязка вебхука к Railway при запуске"""
-    time.sleep(5) # Даем Flask немного времени на запуск
-    # Получаем домен динамически (Railway прописывает его в RAILWAY_PUBLIC_DOMAIN)
+    time.sleep(5) # Даем Flask загрузиться
     railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
     if railway_domain:
-        webhook_url = f"https://{railway_domain}/{TG_BOT_TOKEN}"
+        # Теперь путь фиксированный — /telegram-webhook
+        webhook_url = f"https://{railway_domain}/telegram-webhook"
         print(f"[Webhook] Попытка установить вебхук на: {webhook_url}")
         try:
             res = requests.post(
@@ -895,7 +888,11 @@ def set_telegram_webhook():
         except Exception as e:
             print(f"[Webhook] Не удалось установить вебхук: {e}")
     else:
-        print("[Webhook] Предупреждение: Переменная RAILWAY_PUBLIC_DOMAIN не найдена. Если вебхук не работает, добавь её вручную.")
+        print("[Webhook] Предупреждение: Переменная RAILWAY_PUBLIC_DOMAIN не найдена.")
+# ============================================================================
+
+if __name__ == "__main__":
+    # ==================== ОБРАБОТКА КОМАНДЫ /START (WEBHOOK) ====================
 # ============================================================================
 
     download_pixel_font()
