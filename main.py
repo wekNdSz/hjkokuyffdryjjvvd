@@ -16,13 +16,13 @@ from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 
-# ==================== НАСТРОЙКИ====================
-TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
-TG_CHANNEL_ID = os.environ.get("TG_CHANNEL_ID")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+# ==================== НАСТРОЙКИ (ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ RAILWAY) ====================
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
+TG_CHANNEL_ID = os.environ.get("TG_CHANNEL_ID", "")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 MODEL_NAME = "llama-3.3-70b-versatile"
 
-
+# Глобальный кэш данных Steam и блока "НОВОЕ!"
 STEAM_DATA_CACHE = {
     "EUR": None,
     "USD": None,
@@ -448,8 +448,8 @@ def telegram_scheduler_worker():
         except Exception as e:
             print(f"[Поток] Ошибка: {e}")
 
-# (HTML_TEMPLATE остается неизменным, как в исходном коде)
-HTML_TEMPLATE = """<!DOCTYPE html>
+HTML_TEMPLATE = """
+<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -527,7 +527,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .container { width: 100%; max-width: 850px; margin: 0 auto; padding: 0 15px; }
         .section-title { font-size: 12px; margin: 40px 0 20px 0; text-align: center; line-height: 1.6; }
         
-        /* Особый стиль для блока НОВОЕ! */
         .section-title.fresh-title {
             background-color: var(--green);
             color: var(--white);
@@ -635,7 +634,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         <span></span><span></span><span></span>
                     </div>
                     <div class="card-context-menu" id="menu-fresh-{{ entry.game.id }}">
-                        <div class="menu-item" onclick="window.open('https://store.steampowered.com/app//{{ entry.game.id }}', '_blank')">Открыть Steam</div>
+                        <div class="menu-item" onclick="window.open('https://store.steampowered.com/app/{{ entry.game.id }}', '_blank')">Открыть Steam</div>
                     </div>
                 </div>
             </div>
@@ -802,7 +801,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         window.onload = () => { Object.keys(state).forEach(key => renderSection(key)); };
     </script>
 </body>
-</html>""" # Скопируй сюда полностью строковый HTML шаблон из твоего вопроса
+</html>
+"""
 
 @app.route("/")
 def index():
@@ -822,11 +822,11 @@ def index():
         current_currency=global_currency,
         fresh_games=HOT_FRESH_GAMES
     )
+
 # ==================== ОБРАБОТКА КОМАНДЫ /START (WEBHOOK) ====================
 @app.route("/telegram-webhook", methods=["POST"])
 def telegram_webhook():
     try:
-        # Проверяем, что запрос пришел именно в формате JSON
         update = request.get_json(silent=True)
         if not update or "message" not in update:
             return "OK", 200
@@ -835,13 +835,12 @@ def telegram_webhook():
         text = message.get("text", "")
         chat_id = message["chat"]["id"]
 
-        # Если пользователь пишет /start
         if text.startswith("/start"):
             host_url = request.host_url.rstrip('/')
             
             welcome_text = (
-                "Привет! Я бот- скрытых скидок и халявы в Steam.\n\n"
-                "чтобы открыть наше приложение и посмотреть весь список игр!"
+                "Привет! 👾 Я бот-радар скрытых скидок и халявы в Steam.\n\n"
+                "Нажми на кнопку ниже, чтобы открыть наше Web App приложение и посмотреть весь список игр!"
             )
             
             reply_markup = {
@@ -872,10 +871,11 @@ def telegram_webhook():
 
 def set_telegram_webhook():
     """Автоматическая привязка вебхука к Railway при запуске"""
-    time.sleep(5) # Даем Flask загрузиться
-    railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+    time.sleep(5)
+    railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN") or os.environ.get("RAILWAY_STATIC_URL")
+    
     if railway_domain:
-        # Теперь путь фиксированный — /telegram-webhook
+        railway_domain = railway_domain.replace("https://", "").replace("http://", "")
         webhook_url = f"https://{railway_domain}/telegram-webhook"
         print(f"[Webhook] Попытка установить вебхук на: {webhook_url}")
         try:
@@ -888,18 +888,15 @@ def set_telegram_webhook():
         except Exception as e:
             print(f"[Webhook] Не удалось установить вебхук: {e}")
     else:
-        print("[Webhook] Предупреждение: Переменная RAILWAY_PUBLIC_DOMAIN не найдена.")
+        print("[Webhook] Ошибка: Не удалось определить домен Railway.")
 # ============================================================================
 
 if __name__ == "__main__":
-    # ==================== ОБРАБОТКА КОМАНДЫ /START (WEBHOOK) ====================
-# ============================================================================
-
     download_pixel_font()
     
     threading.Thread(target=steam_cache_worker, daemon=True).start()
     threading.Thread(target=telegram_scheduler_worker, daemon=True).start()
-    
+    threading.Thread(target=set_telegram_webhook, daemon=True).start()
     
     port = int(os.environ.get("PORT", 5000))
     app.run(debug=False, port=port, host="0.0.0.0")
