@@ -831,15 +831,23 @@ def index():
 def telegram_webhook():
     try:
         update = request.get_json(silent=True)
-        if not update or "message" not in update:
+        if not update:
             return "OK", 200
-        
-        message = update["message"]
+            
+        # Проверяем, есть ли вообще сообщение в апдейте
+        message = update.get("message")
+        if not message:
+            return "OK", 200
+            
         text = message.get("text", "")
-        chat_id = message["chat"]["id"]
+        chat = message.get("chat", {})
+        chat_id = chat.get("id")
 
-        if text.startswith("/start"):
-            host_url = request.host_url.rstrip('/')
+        # Нам нужны только личные сообщения (тип chat обычно 'private')
+        if text.startswith("/start") and chat_id:
+            domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN") or os.environ.get("RAILWAY_STATIC_URL") or "localhost"
+            domain = domain.replace("https://", "").replace("http://", "").rstrip('/')
+            host_url = f"https://{domain}"
             
             welcome_text = (
                 "Привет! 👾 Я бот-радар скрытых скидок и халявы в Steam.\n\n"
@@ -857,7 +865,8 @@ def telegram_webhook():
                 ]
             }
             
-            requests.post(
+            # Отправляем запрос напрямую в API Telegram
+            res = requests.post(
                 f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
                 json={
                     "chat_id": chat_id,
@@ -866,35 +875,37 @@ def telegram_webhook():
                 },
                 timeout=10
             )
+            print(f"[Личка] Отправлен /start для {chat_id}. Ответ ТГ: {res.status_code}")
             
     except Exception as e:
-        print(f"[Webhook] Ошибка обработки апдейта: {e}")
+        print(f"[Webhook Error] Ошибка в личке: {e}")
         
     return "OK", 200
 
-# Автоматически ставим вебхук БЕЗ фонового потока, прямо перед обработкой первого запроса юзера
 @app.before_request
 def init_telegram_webhook():
     global WEBHOOK_SET
     if not WEBHOOK_SET:
         railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN") or os.environ.get("RAILWAY_STATIC_URL")
         if railway_domain:
-            railway_domain = railway_domain.replace("https://", "").replace("http://", "")
+            railway_domain = railway_domain.replace("https://", "").replace("http://", "").rstrip('/')
             webhook_url = f"https://{railway_domain}/telegram-webhook"
-            print(f"[Webhook] Регистрация вебхука на домен: {webhook_url}")
+            print(f"[Webhook] Принудительный сброс и установка вебхука на: {webhook_url}")
             try:
+                # Сначала удаляем старый вебхук, чтобы избежать конфликтов
+                requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/deleteWebhook", timeout=10)
+                # Ставим новый
                 res = requests.post(
                     f"https://api.telegram.org/bot{TG_BOT_TOKEN}/setWebhook",
-                    json={"url": webhook_url},
+                    json={"url": webhook_url, "allowed_updates": ["message"]},
                     timeout=10
                 )
-                print(f"[Webhook] Telegram ответил: {res.json()}")
-                WEBHOOK_SET = True
+                print(f"[Webhook] Результат: {res.json()}")
             except Exception as e:
-                print(f"[Webhook] Ошибка регистрации: {e}")
-        else:
-            print("[Webhook] Предупреждение: Домен Railway не найден.")
+                print(f"[Webhook] Ошибка: {e}")
         WEBHOOK_SET = True
+# ============================================================================
+
 
 # ============================================================================
 
