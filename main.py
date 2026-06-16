@@ -17,10 +17,13 @@ from PIL import Image, ImageDraw, ImageFont
 app = Flask(__name__)
 
 # ==================== НАСТРОЙКИ (ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ RAILWAY) ====================
-TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
-TG_CHANNEL_ID = os.environ.get("TG_CHANNEL_ID", "")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "").strip()
+TG_CHANNEL_ID = os.environ.get("TG_CHANNEL_ID", "").strip()
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 MODEL_NAME = "llama-3.3-70b-versatile"
+
+# Флаг, чтобы вебхук ставился только 1 раз при запуске
+WEBHOOK_SET = False
 
 # Глобальный кэш данных Steam и блока "НОВОЕ!"
 STEAM_DATA_CACHE = {
@@ -313,7 +316,7 @@ def generate_game_card_image(game_name, category, prices, img_url, is_ultra_hot=
 
 def run_telegram_autopost_logic():
     global HOT_FRESH_GAMES
-    print("[Бот] Анализ глубоких страниц Steam в поисках Жгучей Халявы и больших скидок...")
+    print("[Бот] Анализ глубоких страниц Steam в поисках Жгучей Халявы...")
     categories = {"Халява / Раздачи": [], "Лучшее дня": [], "Для друзей": []}
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
@@ -392,7 +395,7 @@ def run_telegram_autopost_logic():
             f"Пиши на русском языке, живым геймерским стилем, без штампов и воды."
         )
         if is_ultra_hot:
-            prompt_content += "\nВНИМАНИЕ: На эту игру сейчас действует максимальная халява/скидка, выдели это особо!"
+            prompt_content += "\nВНИМАНИЕ: На эту игру сейчас действует максимальная халява, выдели это особо!"
 
         completion = client.chat.completions.create(
             model=MODEL_NAME, messages=[{"role": "user", "content": prompt_content}], timeout=20
@@ -435,7 +438,7 @@ def run_telegram_autopost_logic():
         print(f"[Бот] Ошибка отправки: {e}")
 
 def telegram_scheduler_worker():
-    time.sleep(8)
+    time.sleep(12)
     try:
         run_telegram_autopost_logic()
     except Exception as e:
@@ -824,71 +827,83 @@ def index():
     )
 
 # ==================== ОБРАБОТКА КОМАНДЫ /START (WEBHOOK) ====================
-# ==================== ОБРАБОТКА КОМАНДЫ /START (WEBHOOK) С ЛОГАМИ ====================
 @app.route("/telegram-webhook", methods=["POST"])
 def telegram_webhook():
     try:
         update = request.get_json(silent=True)
-        print(f"[Webhook] Получен апдейт от ТГ: {json.dumps(update, ensure_ascii=False)}")
-        
         if not update or "message" not in update:
-            print("[Webhook] Апдейт пустой или не содержит message")
             return "OK", 200
         
         message = update["message"]
         text = message.get("text", "")
         chat_id = message["chat"]["id"]
-        
-        print(f"[Webhook] Текст сообщения: '{text}', Chat ID: {chat_id}")
 
         if text.startswith("/start"):
-            print("[Webhook] Условие /start СРАБОТАЛО. Готовим отправку кнопки...")
             host_url = request.host_url.rstrip('/')
-            print(f"[Webhook] Ссылка для Web App: {host_url}")
             
             welcome_text = (
-                "Привет!  Я бот скрытых скидок и халявы в Steam.\n\n"
-                "чтобы открыть наше Web App приложение и посмотреть весь список игр!"
+                "Привет! 👾 Я бот-радар скрытых скидок и халявы в Steam.\n\n"
+                "Нажми на кнопку ниже, чтобы открыть наше Web App приложение и посмотреть весь список игр!"
             )
             
             reply_markup = {
                 "inline_keyboard": [
                     [
                         {
-                            "text": "Открыть  App",
+                            "text": "🎮 Открыть Web App",
                             "web_app": {"url": host_url}
                         }
                     ]
                 ]
             }
             
-            url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-            payload = {
-                "chat_id": chat_id,
-                "text": welcome_text,
-                "reply_markup": reply_markup
-            }
-            
-            print(f"[Webhook] Отправка запроса в ТГ... Токен (первые 5 симв): {TG_BOT_TOKEN[:5]}...")
-            res = requests.post(url, json=payload, timeout=10)
-            print(f"[Webhook] Ответ от ТГ на отправку кнопки: Статус {res.status_code}, Ответ: {res.text}")
-        else:
-            print("[Webhook] Это не команда /start, игнорируем.")
+            requests.post(
+                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": welcome_text,
+                    "reply_markup": reply_markup
+                },
+                timeout=10
+            )
             
     except Exception as e:
-        print(f"[Webhook] КРИТИЧЕСКАЯ ОШИБКА В КРИПТЕ: {e}")
+        print(f"[Webhook] Ошибка обработки апдейта: {e}")
         
     return "OK", 200
-# ============================================================================
+
+# Автоматически ставим вебхук БЕЗ фонового потока, прямо перед обработкой первого запроса юзера
+@app.before_request
+def init_telegram_webhook():
+    global WEBHOOK_SET
+    if not WEBHOOK_SET:
+        railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN") or os.environ.get("RAILWAY_STATIC_URL")
+        if railway_domain:
+            railway_domain = railway_domain.replace("https://", "").replace("http://", "")
+            webhook_url = f"https://{railway_domain}/telegram-webhook"
+            print(f"[Webhook] Регистрация вебхука на домен: {webhook_url}")
+            try:
+                res = requests.post(
+                    f"https://api.telegram.org/bot{TG_BOT_TOKEN}/setWebhook",
+                    json={"url": webhook_url},
+                    timeout=10
+                )
+                print(f"[Webhook] Telegram ответил: {res.json()}")
+                WEBHOOK_SET = True
+            except Exception as e:
+                print(f"[Webhook] Ошибка регистрации: {e}")
+        else:
+            print("[Webhook] Предупреждение: Домен Railway не найден.")
+        WEBHOOK_SET = True
 
 # ============================================================================
 
 if __name__ == "__main__":
     download_pixel_font()
     
+    # Запускаем только безопасные потоки парсинга и рассылки
     threading.Thread(target=steam_cache_worker, daemon=True).start()
     threading.Thread(target=telegram_scheduler_worker, daemon=True).start()
-    threading.Thread(target=set_telegram_webhook, daemon=True).start()
     
     port = int(os.environ.get("PORT", 5000))
     app.run(debug=False, port=port, host="0.0.0.0")
