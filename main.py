@@ -824,6 +824,80 @@ def index():
     )
 
 if __name__ == "__main__":
+    # ==================== ОБРАБОТКА КОМАНДЫ /START (WEBHOOK) ====================
+@app.route(f"/{TG_BOT_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    try:
+        update = request.get_json()
+        if not update or "message" not in update:
+            return "OK", 200
+        
+        message = update["message"]
+        text = message.get("text", "")
+        chat_id = message["chat"]["id"]
+
+        # Если пользователь пишет /start
+        if text.startswith("/start"):
+            # Получаем домен, который Railway выделил для твоего приложения
+            # Если в переменных окружения его нет, кнопка будет вести на главную,
+            # но лучше, чтобы Railway автоматически подхватывал хост
+            host_url = request.host_url.rstrip('/')
+            
+            # Текст приветствия
+            welcome_text = (
+                "Привет!  Я бот скрытых скидок и халявы в Steam.\n\n"
+                "чтобы открыть наше  приложение и посмотреть весь список игр!"
+            )
+            
+            # Структура инлайн-кнопки с Web App
+            reply_markup = {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": " Открыть Web App",
+                            "web_app": {"url": host_url}
+                        }
+                    ]
+                ]
+            }
+            
+            # Отправляем сообщение пользователю
+            requests.post(
+                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": welcome_text,
+                    "reply_markup": reply_markup
+                },
+                timeout=10
+            )
+            
+    except Exception as e:
+        print(f"[Webhook] Ошибка обработки апдейта: {e}")
+        
+    return "OK", 200
+
+def set_telegram_webhook():
+    """Автоматическая привязка вебхука к Railway при запуске"""
+    time.sleep(5) # Даем Flask немного времени на запуск
+    # Получаем домен динамически (Railway прописывает его в RAILWAY_PUBLIC_DOMAIN)
+    railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+    if railway_domain:
+        webhook_url = f"https://{railway_domain}/{TG_BOT_TOKEN}"
+        print(f"[Webhook] Попытка установить вебхук на: {webhook_url}")
+        try:
+            res = requests.post(
+                f"https://api.telegram.org/bot{TG_BOT_TOKEN}/setWebhook",
+                json={"url": webhook_url},
+                timeout=10
+            )
+            print(f"[Webhook] Ответ Telegram: {res.json()}")
+        except Exception as e:
+            print(f"[Webhook] Не удалось установить вебхук: {e}")
+    else:
+        print("[Webhook] Предупреждение: Переменная RAILWAY_PUBLIC_DOMAIN не найдена. Если вебхук не работает, добавь её вручную.")
+# ============================================================================
+
     download_pixel_font()
     
     threading.Thread(target=steam_cache_worker, daemon=True).start()
