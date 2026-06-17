@@ -1,8 +1,7 @@
 import os
-import sys
+import time
 import json
 import re
-import time
 import random
 import threading
 import html
@@ -16,7 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 
-# ==================== НАСТРОЙКИ (ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ RAILWAY) ====================
+# ==================== НАСТРОЙКИ ====================
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "").strip()
 TG_CHANNEL_ID = os.environ.get("TG_CHANNEL_ID", "").strip()
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
@@ -24,16 +23,15 @@ MODEL_NAME = "llama-3.3-70b-versatile"
 
 WEBHOOK_SET = False
 
-# Глобальный кэш данных Steam по регионам
+# Глобальный кэш и история публикаций
 STEAM_DATA_CACHE = {
-    "EUR": {},
-    "USD": {},
-    "RUB": {},
+    "EUR": None,
+    "USD": None,
+    "RUB": None,
     "last_updated": 0
 }
 
-# История публикаций для защиты от дублей: {"app_id": timestamp}
-PUBLISHED_GAMES_HISTORY = {}
+PUBLISHED_GAMES_HISTORY = {}  # {app_id: timestamp}
 
 REGIONS = {
     "EUR": {"country": "DE", "symbol": "€", "lang": "en-US,en;q=0.9"},
@@ -41,23 +39,35 @@ REGIONS = {
     "RUB": {"country": "RU", "symbol": "₽", "lang": "ru-RU,ru;q=0.9"}
 }
 
+CATEGORIES_MAP = {
+    "discounts": "Скидки дня",
+    "free_single": "Одиночные бесплатные игры",
+    "coop_disc": "Кооперативные скидки",
+    "coop_free": "Мультиплеерная халява",
+    "upcoming": "Скоро станут бесплатными",
+    "action_games": "🔥 Топ Экшены / Боевики",
+    "strategy_games": "🧠 Тактика и Стратегии",
+    "rpg_games": "🔮 Ролевые миры (RPG)",
+    "simulator_games": "🚜 Симуляторы реальности",
+    "adventure_games": "🧭 Приключения и Квесты"
+}
+
 BANNED_GAMES = ["pubg", "counter-strike", "dota", "apex legends", "warframe", "war thunder", "destiny 2", "rainbow six"]
 FONT_PATH = "PressStart2P.ttf"
 
+# ==================== УТИЛИТЫ ====================
 def is_ignored(name):
     return any(banned in name.lower() for banned in BANNED_GAMES)
 
 def download_pixel_font():
     if not os.path.exists(FONT_PATH):
-        print("[Система] Скачивание пиксельного шрифта...")
-        url = "https://github.com/google/fonts/raw/main/ofl/pressstart2p/PressStart2P-Regular.ttf"
+        print("[Система] Скачивание шрифта...")
         try:
-            r = requests.get(url, timeout=15)
+            r = requests.get("https://github.com/google/fonts/raw/main/ofl/pressstart2p/PressStart2P-Regular.ttf", timeout=15)
             with open(FONT_PATH, "wb") as f:
                 f.write(r.content)
-            print("[Система] Шрифт успешно загружен.")
         except Exception as e:
-            print(f"[Система] Не удалось скачать шрифт: {e}.")
+            print(f"[Система] Ошибка загрузки шрифта: {e}")
 
 def clean_price(price_str, currency_code):
     if not price_str:
@@ -94,7 +104,7 @@ def get_prices_for_all_regions(app_id):
     results = {}
     for code, cfg in REGIONS.items():
         cookies = {"wants_mature_content": "1", "birthtime": "288028801", "last_steam_country": cfg["country"]}
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept-Language": cfg["lang"]}
+        headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": cfg["lang"]}
         time.sleep(0.3)
         try:
             r = requests.get(f"https://store.steampowered.com/app/{app_id}/", headers=headers, cookies=cookies, timeout=7)
@@ -115,16 +125,16 @@ def get_prices_for_all_regions(app_id):
                     results[code] = {"price": "N/A", "discount": "0%"}
             else:
                 results[code] = {"price": "N/A", "discount": "0%"}
-        except Exception:
+        except:
             results[code] = {"price": "N/A", "discount": "0%"}
     return results
 
 def parse_steam_category(url_params, global_currency, limit=25):
     cfg = REGIONS.get(global_currency, REGIONS["EUR"])
     cookies = {"wants_mature_content": "1", "birthtime": "288028801", "last_steam_country": cfg["country"]}
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept-Language": cfg["lang"]}
-    
+    headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": cfg["lang"]}
     games = []
+    
     try:
         res = requests.get(f"https://store.steampowered.com/search/?{url_params}&ndl=1", headers=headers, cookies=cookies, timeout=10)
         if res.status_code == 200:
@@ -140,42 +150,28 @@ def parse_steam_category(url_params, global_currency, limit=25):
                 price_div = row.find("div", class_="discount_final_price") or row.find("div", class_="search_price")
                 
                 discount = disc_div.text.strip() if disc_div else "0%"
-                
                 if price_div:
                     p_txt = price_div.text.strip()
                     if "free" in p_txt.lower() or "бесплатно" in p_txt.lower():
-                        price = "FREE"
-                        discount = "100%"
+                        price, discount = "FREE", "100%"
                     else:
-                        # Если это блок с двумя ценами (старая и новая), берем финальную часть
-                        if "\n" in p_txt:
-                            p_txt = p_txt.split("\n")[-1].strip()
+                        if "\n" in p_txt: p_txt = p_txt.split("\n")[-1].strip()
                         price = f"{clean_price(p_txt, global_currency):.2f} {cfg['symbol']}"
                 else:
                     price = "N/A"
 
-                games.append({
-                    "id": app_id, 
-                    "name": name, 
-                    "discount": discount, 
-                    "price": price, 
-                    "img": img_url,
-                    "regional_prices": {} # Заполняется динамически на клиенте или при запросе
-                })
+                games.append({"id": app_id, "name": name, "discount": discount, "price": price, "img": img_url})
                 if len(games) >= limit: break
-    except Exception as e:
-        print(f"[Парсер] Ошибка сбора категории ({url_params}): {e}")
+    except: pass
     return games
 
 def get_steam_data(global_currency="EUR"):
-    # Парсим 5 старых категорий + 5 новых категорий по 25 игр каждая
     return {
         "discounts": parse_steam_category("specials=1", global_currency, 25),
         "free_single": parse_steam_category("maxprice=free", global_currency, 25),
         "coop_disc": parse_steam_category("category2=38,9&specials=1", global_currency, 25),
         "coop_free": parse_steam_category("maxprice=free&category2=38,9", global_currency, 25),
         "upcoming": parse_steam_category("maxprice=free&filter=comingsoon", global_currency, 25),
-        # 5 новых категорий по 25 игр:
         "action_games": parse_steam_category("tags=19&specials=1", global_currency, 25),
         "strategy_games": parse_steam_category("tags=9&specials=1", global_currency, 25),
         "rpg_games": parse_steam_category("tags=122&specials=1", global_currency, 25),
@@ -185,27 +181,14 @@ def get_steam_data(global_currency="EUR"):
 
 def steam_cache_worker():
     while True:
-        print("[Кэш] Обновление данных Steam по всем регионам и всем 10 категориям...")
-        for currency in ["EUR", "USD", "RUB"]:
+        print("[Кэш] Обновление 10 категорий Steam...")
+        for currency in REGIONS:
             try:
-                # Генерируем полные базы данных
-                raw_data = get_steam_data(currency)
-                
-                # Догружаем региональные цены для корректного переключения в Web App на лету
-                for cat in raw_data.values():
-                    for game in cat:
-                        game["regional_prices"] = {
-                            "EUR": {"price": game["price"] if currency == "EUR" else "Загрузка...", "discount": game["discount"]},
-                            "USD": {"price": game["price"] if currency == "USD" else "Загрузка...", "discount": game["discount"]},
-                            "RUB": {"price": game["price"] if currency == "RUB" else "Загрузка...", "discount": game["discount"]}
-                        }
-                
-                STEAM_DATA_CACHE[currency] = raw_data
+                STEAM_DATA_CACHE[currency] = get_steam_data(currency)
                 time.sleep(2)
             except Exception as e:
-                print(f"[Кэш] Ошибка обновления {currency}: {e}")
+                print(f"[Кэш] Ошибка: {e}")
         STEAM_DATA_CACHE["last_updated"] = time.time()
-        print("[Кэш] База данных успешно обновлена. Сон на 30 минут.")
         time.sleep(1800)
 
 def generate_game_card_image(game_name, category, prices, img_url, is_ultra_hot=False):
@@ -218,7 +201,7 @@ def generate_game_card_image(game_name, category, prices, img_url, is_ultra_hot=
         font_main = ImageFont.truetype(FONT_PATH, 16)
         font_title = ImageFont.truetype(FONT_PATH, 20)
         font_sub = ImageFont.truetype(FONT_PATH, 12)
-    except Exception:
+    except:
         font_main = font_title = font_sub = ImageFont.load_default()
 
     draw.rectangle([40, 40, 960, 560], fill="#fffbf7", outline="#000000", width=5)
@@ -230,12 +213,11 @@ def generate_game_card_image(game_name, category, prices, img_url, is_ultra_hot=
     draw.text((65, 58), header_text, fill=header_txt_color, font=font_title)
 
     try:
-        response = requests.get(img_url, timeout=5)
-        game_thumb = Image.open(BytesIO(response.content)).convert("RGB")
-        game_thumb = game_thumb.resize((360, 200), Image.Resampling.NEAREST)
+        resp = requests.get(img_url, timeout=5)
+        game_thumb = Image.open(BytesIO(resp.content)).convert("RGB").resize((360, 200), Image.Resampling.NEAREST)
         img.paste(game_thumb, (70, 140))
         draw.rectangle([67, 137, 433, 343], outline="#000000", width=4)
-    except Exception:
+    except:
         draw.rectangle([70, 140, 430, 340], fill="#7a7a7a", outline="#000000", width=4)
 
     draw.text((470, 140), "GAME:", fill="#7a7a7a", font=font_sub)
@@ -270,123 +252,72 @@ def generate_game_card_image(game_name, category, prices, img_url, is_ultra_hot=
             draw.text((775, y_offset + 12), "REGULAR", fill="#000000", font=font_sub)
         y_offset += 50
 
-    img_buf = BytesIO()
-    img.save(img_buf, format="PNG")
-    img_buf.seek(0)
-    return img_buf
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 def run_telegram_autopost_logic():
     global PUBLISHED_GAMES_HISTORY
-    print("[Бот-Автопост] Проверка базы данных на новые скидки...")
-    
-    # Очищаем историю публикаций старше 24 часов
     now = time.time()
-    PUBLISHED_GAMES_HISTORY = {gid: ts for gid, ts in PUBLISHED_GAMES_HISTORY.items() if now - ts < 86400}
+    PUBLISHED_GAMES_HISTORY = {k: v for k, v in PUBLISHED_GAMES_HISTORY.items() if now - v < 86400}
+    
+    cache = STEAM_DATA_CACHE.get("EUR")
+    if not cache: return
 
-    # Берем актуальный кэш
-    cache_data = STEAM_DATA_CACHE.get("EUR")
-    if not cache_data:
-        print("[Бот-Автопост] Ошибка: Кэш Steam пуст. Ждем инициализации.")
-        return
-
-    # Собираем все доступные игры из всех 10 категорий
-    all_potential_games = []
-    for cat_name, items in cache_data.items():
+    candidates = []
+    for cat_name, items in cache.items():
         for item in items:
-            # Проверяем фильтр дублей по ID за 24 часа!
-            if item["id"] in PUBLISHED_GAMES_HISTORY:
-                continue
-            
-            # Считаем числовое значение скидки
-            disc_str = item.get("discount", "0%")
-            disc_val = abs(int(disc_str.replace('%','').replace('-','').strip())) if '%' in disc_str else 0
-            
-            all_potential_games.append({
-                "item": item,
-                "category": cat_name,
-                "disc_val": disc_val
-            })
+            if item["id"] not in PUBLISHED_GAMES_HISTORY:
+                disc_val = abs(int(item.get("discount", "0%").replace('%','').replace('-','').strip())) if '%' in item.get("discount", "0%") else 0
+                candidates.append({"item": item, "cat": CATEGORIES_MAP.get(cat_name, cat_name), "disc": disc_val})
 
-    if not all_potential_games:
-        print("[Бот-Автопост] Все игры из кэша уже были опубликованы за 24 часа. Пропуск.")
-        return
+    if not candidates: return
+    candidates.sort(key=lambda x: x["disc"], reverse=True)
+    selected = candidates[0]
+    game, category = selected["item"], selected["cat"]
+    
+    PUBLISHED_GAMES_HISTORY[game["id"]] = now
+    
+    regional_prices = get_prices_for_all_regions(game["id"])
+    photo = generate_game_card_image(game["name"], category, regional_prices, game["img"], selected["disc"] >= 90)
 
-    # Сортируем по максимальной выгоде
-    all_potential_games.sort(key=lambda x: x["disc_val"], reverse=True)
-    selected = all_potential_games[0]
-    chosen_game = selected["item"]
-    chosen_category = selected["category"]
-
-    # Заносим игру в список опубликованных, чтобы больше не брать её 24 часа
-    PUBLISHED_GAMES_HISTORY[chosen_game["id"]] = time.time()
-    print(f"[Бот-Автопост] Выбрана игра: {chosen_game['name']} (ID: {chosen_game['id']}) со скидкой {chosen_game['discount']}.")
-
-    # Генерируем региональные цены и пиксельную карточку
-    regional_prices = get_prices_for_all_regions(chosen_game["id"])
-    is_ultra_hot = selected["disc_val"] >= 90
-    photo_buffer = generate_game_card_image(chosen_game["name"], chosen_category, regional_prices, chosen_game["img"], is_ultra_hot)
-
-    # Работа с ИИ ИНТЕГРАЦИЕЙ GROQ
-    ai_text = "Отличная игра со скидкой доступна в магазине Steam."
+    ai_text = "Отличная игра со скидкой доступна в Steam."
     if GROQ_API_KEY:
         try:
             client = Groq(api_key=GROQ_API_KEY)
-            prices_summary = ", ".join([f"{k}: {v['price']} (скидка {v['discount']})" for k, v in regional_prices.items()])
-            prompt_content = (
-                f"Ты игровой аналитик. Напиши короткий обзор для телеграм-канала про игру '{chosen_game['name']}'.\n"
-                f"Категория: #{chosen_category}\n"
-                f"Цены: {prices_summary}\n"
-                f"Напиши 2 коротких предложения про суть игры и 1 предложение о выгоде скидки. Текст на русском, без воды и лишних эмодзи."
-            )
-            completion = client.chat.completions.create(
-                model=MODEL_NAME, messages=[{"role": "user", "content": prompt_content}], timeout=20
-            )
-            if completion.choices:
-                ai_text = completion.choices[0].message.content.strip()
+            ps = ", ".join([f"{k}: {v['price']}" for k, v in regional_prices.items()])
+            prompt = f"Напиши 3 коротких предложения для ТГ-канала об игре '{game['name']}'. Категория: {category}. Цены: {ps}. Без эмодзи."
+            res = client.chat.completions.create(model=MODEL_NAME, messages=[{"role": "user", "content": prompt}], timeout=15)
+            ai_text = res.choices[0].message.content.strip()
         except Exception as e:
-            print(f"[ИИ Groq] Ошибка генерации текста: {e}")
+            print(f"[ИИ] Ошибка Groq: {e}")
 
-    # Формируем пост с хэштегами
-    safe_category = html.escape(chosen_category.replace(' ', '_'))
-    safe_game_name = html.escape(chosen_game['name'])
-    safe_ai_text = html.escape(ai_text)
+    safe_cat = html.escape(category.replace(' ', '_'))
+    safe_name = html.escape(game['name'])
+    p_block = "\n".join([f"• <b>{k}:</b> {html.escape(v['price'])} ({html.escape(v['discount'])})" for k, v in regional_prices.items()])
     
-    prices_block = ""
-    for r_code, r_data in regional_prices.items():
-        prices_block += f"• <b>{r_code}:</b> {html.escape(r_data['price'])} ({html.escape(r_data['discount'])})\n"
-
-    # Трендовые хэштеги на основе категории
-    hashtags = f"#{safe_category} #Steam #Халява #Скидки #Gamer"
-
-    tg_message = (
-        f"👾 <b>ИГРА:</b> {safe_game_name}\n\n"
-        f"💰 <b>РЕГИОНАЛЬНЫЕ СКИДКИ:</b>\n{prices_block}\n"
-        f"📝 <b>ОБЗОР ИИ:</b>\n{safe_ai_text}\n\n"
-        f"🎮 <b>Ссылка:</b> https://store.steampowered.com/app/{chosen_game['id']}\n\n"
-        f"{hashtags}"
-    )
+    msg = (f"👾 <b>ИГРА:</b> {safe_name}\n\n"
+           f"💰 <b>СКИДКИ:</b>\n{p_block}\n\n"
+           f"📝 <b>ОБЗОР:</b>\n{html.escape(ai_text)}\n\n"
+           f"🎮 <b>Ссылка:</b> https://store.steampowered.com/app/{game['id']}\n\n"
+           f"#{safe_cat} #Steam #Скидки")
 
     try:
-        requests.post(
-            f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendPhoto",
-            files={"photo": ("card.png", photo_buffer, "image/png")},
-            data={"chat_id": TG_CHANNEL_ID, "caption": tg_message, "parse_mode": "HTML"},
-            timeout=15
-        )
-        print("[Бот-Автопост] Пост успешно отправлен в канал!")
+        requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendPhoto",
+                      files={"photo": ("card.png", photo, "image/png")},
+                      data={"chat_id": TG_CHANNEL_ID, "caption": msg, "parse_mode": "HTML"}, timeout=15)
     except Exception as e:
-        print(f"[Бот-Автопост] Ошибка отправки поста: {e}")
+        print(f"[Бот] Ошибка отправки: {e}")
 
 def telegram_scheduler_worker():
-    # Первый круг автопостинга через 20 сек после запуска, далее каждые 2 часа (7200 сек)
     time.sleep(20)
     while True:
-        try:
-            run_telegram_autopost_logic()
-        except Exception as e:
-            print(f"[Планировщик] Ошибка цикла: {e}")
+        try: run_telegram_autopost_logic()
+        except Exception as e: print(f"[Планировщик] Ошибка: {e}")
         time.sleep(7200)
 
+# ==================== HTML ШАБЛОН ====================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -397,86 +328,48 @@ HTML_TEMPLATE = """
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: #dfd4c9; 
-            --header-bg: #ffffff; 
-            --grid-skin: #dfd4c9;
-            --text-color: #000000;
-            --white: #ffffff;
-            --gray: #7a7a7a;
-            --green: #4caf50;
+            --bg-color: #dfd4c9; --header-bg: #ffffff; --text-color: #000000;
+            --white: #ffffff; --gray: #7a7a7a; --green: #4caf50;
             --border-pixel: 4px solid var(--text-color);
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Press Start 2P', monospace; image-rendering: pixelated; }
-        
-        body {
-            background-color: var(--bg-color);
-            background-size: 32px 32px;
-            color: var(--text-color);
-            padding-top: 145px; padding-bottom: 80px;
-        }
-        
-        header {
-            position: fixed; top: 0; left: 0; width: 100%; height: 115px;
-            background-color: var(--header-bg); border-bottom: var(--border-pixel);
-            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; z-index: 999999;
-        }
+        body { background-color: var(--bg-color); background-size: 32px 32px; color: var(--text-color); padding-top: 145px; padding-bottom: 80px; }
+        header { position: fixed; top: 0; left: 0; width: 100%; height: 115px; background-color: var(--header-bg); border-bottom: var(--border-pixel); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; z-index: 999999; }
         .header-title { font-size: 14px; font-weight: bold; background: var(--white); padding: 4px; border: 2px solid var(--text-color); }
-        
         .container { width: 100%; max-width: 850px; margin: 0 auto; padding: 0 15px; }
         .section-title { font-size: 11px; margin: 30px 0 15px 0; text-align: center; background: #fff; padding: 6px; border: 3px solid #000; }
-        
-        .game-card {
-            background-color: #fffbf7; border: var(--border-pixel); display: flex; margin-bottom: 25px;
-            position: relative; box-shadow: 6px 6px 0px rgba(0,0,0,0.15);
-        }
+        .game-card { background-color: #fffbf7; border: var(--border-pixel); display: flex; margin-bottom: 25px; position: relative; box-shadow: 6px 6px 0px rgba(0,0,0,0.15); }
         .game-img-wrapper { width: 35%; min-width: 115px; max-width: 200px; border-right: var(--border-pixel); background: var(--gray); }
         .game-img-wrapper img { width: 100%; height: 100%; object-fit: cover; display: block; }
-        
         .game-info { flex: 1; padding: 12px; display: flex; flex-direction: column; justify-content: space-between; position: relative; min-width: 0; }
-        .game-title { font-size: 10px; line-height: 1.4; font-weight: bold; overflow: hidden; text-overflow: ellipsis; }
-        .game-details { display: flex; align-items: center; justify-content: flex-start; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-        
+        .game-title { font-size: 10px; line-height: 1.4; font-weight: bold; overflow: hidden; text-overflow: ellipsis; padding-right: 20px;}
+        .game-details { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
         .badge { font-size: 8px; height: 22px; padding: 0 4px; background: var(--white); border: 2px solid var(--text-color); display: inline-flex; align-items: center; }
         .badge.discount { background: #ffeb3b; }
         .badge.price { background: #ff5722; color: var(--white); }
         .badge.price-free { background: var(--green) !important; color: var(--white) !important; }
-
-        .dots-menu-btn {
-            position: absolute; top: 12px; right: 14px; width: 24px; height: 24px; cursor: pointer;
-            display: flex; flex-direction: column; justify-content: space-between; align-items: center; padding: 3px 0;
-        }
+        .dots-menu-btn { position: absolute; top: 12px; right: 14px; width: 24px; height: 24px; cursor: pointer; display: flex; flex-direction: column; justify-content: space-between; align-items: center; padding: 3px 0; }
         .dots-menu-btn span { width: 5px; height: 5px; background-color: var(--text-color); }
-        
-        .card-context-menu {
-            position: absolute; top: 40px; right: 14px; background: var(--white); border: var(--border-pixel);
-            z-index: 9999; width: 160px; display: none;
-        }
+        .card-context-menu { position: absolute; top: 40px; right: 14px; background: var(--white); border: var(--border-pixel); z-index: 9999; width: 160px; display: none; }
         .card-context-menu.open { display: block; }
         .menu-item { font-size: 9px; padding: 10px; cursor: pointer; border-bottom: 2px solid var(--text-color); }
         .menu-item:last-child { border-bottom: none; }
         .menu-item:hover { background: var(--bg-color); }
-        
         .sub-menu { display: none; background: #fff6ed; border-top: 2px dashed #000; }
         .sub-menu.open { display: block; }
         .sub-menu div { padding: 8px; font-size: 8px; text-align: center; cursor: pointer; border-bottom: 1px dashed #000; }
         .sub-menu div:last-child { border-bottom: none; }
-
-        .load-more-btn {
-            background-color: #fffbf7; border: var(--border-pixel); width: 100%; padding: 12px;
-            text-align: center; font-size: 10px; cursor: pointer; margin: 10px 0 40px 0; display: block;
-        }
+        .load-more-btn { background-color: #fffbf7; border: var(--border-pixel); width: 100%; padding: 12px; text-align: center; font-size: 10px; cursor: pointer; margin: 10px 0 40px 0; display: block; }
     </style>
 </head>
 <body>
-
     <header>
         <div class="header-title">STEAM RADAR WEBAPP</div>
-        <div style="font-size:8px;">Валюта по умолчанию: {{ current_currency }}</div>
+        <div style="font-size:8px;">Валюта: {{ current_currency }}</div>
     </header>
-
     <div class="container">
         {% for cat_key, cat_title in categories_map.items() %}
-        <div class="section-title">{{ cat_title }} (До 25 игр)</div>
+        <div class="section-title">{{ cat_title }}</div>
         <div id="{{ cat_key }}-container"></div>
         <div id="{{ cat_key }}-btn" class="load-more-btn" onclick="handleLoadMore('{{ cat_key }}')">Загрузить еще</div>
         {% endfor %}
@@ -484,21 +377,16 @@ HTML_TEMPLATE = """
 
     <script>
         const rawData = {{ data_json | safe }};
-        
-        // Массив локальных символов валют
         const symbols = { "EUR": "€", "USD": "$", "RUB": "₽" };
-
-        // Инициализируем стейт под все 10 разделов
         const state = {};
+        
         Object.keys(rawData).forEach(key => {
             state[key] = { data: rawData[key] || [], index: 0, step: 5, limit: 25 };
         });
 
         function toggleCardMenu(e, appId) {
             e.stopPropagation();
-            document.querySelectorAll('.card-context-menu').forEach(m => {
-                if(m.id !== 'menu-' + appId) m.classList.remove('open');
-            });
+            document.querySelectorAll('.card-context-menu').forEach(m => { if(m.id !== 'menu-' + appId) m.classList.remove('open'); });
             document.getElementById('menu-' + appId).classList.toggle('open');
         }
 
@@ -507,30 +395,18 @@ HTML_TEMPLATE = """
             document.getElementById('submenu-' + appId).classList.toggle('open');
         }
 
-        // БАГ ИСПРАВЛЕН: Локальная моментальная смена цены и валюты ТОЛЬКО для одной конкретной игры на клиенте!
         function changeGameCurrencyLocal(appId, targetCurr) {
-            // Имитируем расчет валюты на основе исходных коэффициентов
             const card = document.querySelector(`.game-card[data-id="${appId}"]`);
             if(!card) return;
-
             const priceBadge = card.querySelector('.badge.price');
-            const discountBadge = card.querySelector('.badge.discount');
-            if(!priceBadge) return;
+            if(!priceBadge || priceBadge.innerText === "FREE") return;
 
-            let currentPriceText = priceBadge.innerText;
-            if(currentPriceText === "FREE") return;
-
-            let numPrice = parseFloat(currentPriceText);
-            if(isNaN(numPrice)) numPrice = 9.99;
-
-            // Локальный быстрый конвертер валют для одной карточки
+            let numPrice = parseFloat(priceBadge.innerText) || 9.99;
             let newPrice = numPrice;
-            if(targetCurr === "RUB") newPrice = numPrice * 95.0;
-            if(targetCurr === "USD" && currentPriceText.includes('₽')) newPrice = numPrice / 95.0;
+            if(targetCurr === "RUB" && !priceBadge.innerText.includes('₽')) newPrice = numPrice * 95.0;
+            if(targetCurr !== "RUB" && priceBadge.innerText.includes('₽')) newPrice = numPrice / 95.0;
             
             priceBadge.innerText = `${newPrice.toFixed(2)} ${symbols[targetCurr]}`;
-            
-            // Закрываем меню
             document.getElementById('menu-' + appId).classList.remove('open');
         }
 
@@ -544,20 +420,16 @@ HTML_TEMPLATE = """
             card.className = 'game-card';
             card.dataset.id = game.id;
             let priceClass = game.price === "FREE" ? "price price-free" : "price";
-
+            
             card.innerHTML = `
-                <div class="game-img-wrapper">
-                    <img src="${game.img}" onerror="this.parentNode.style.background='#7a7a7a'">
-                </div>
+                <div class="game-img-wrapper"><img src="${game.img}" onerror="this.parentNode.style.background='#7a7a7a'"></div>
                 <div class="game-info">
                     <div class="game-title">${game.name}</div>
                     <div class="game-details">
                         <span class="badge discount">${game.discount}</span>
                         <span class="badge ${priceClass}">${game.price}</span>
                     </div>
-                    <div class="dots-menu-btn" onclick="toggleCardMenu(event, '${game.id}')">
-                        <span></span><span></span><span></span>
-                    </div>
+                    <div class="dots-menu-btn" onclick="toggleCardMenu(event, '${game.id}')"><span></span><span></span><span></span></div>
                     <div class="card-context-menu" id="menu-${game.id}">
                         <div class="menu-item" onclick="window.open('https://store.steampowered.com/app/${game.id}', '_blank')">Открыть Steam</div>
                         <div class="menu-item" onclick="toggleSubMenu(event, '${game.id}')">Изменить валюту ▾</div>
@@ -580,19 +452,13 @@ HTML_TEMPLATE = """
 
             let rendered = 0;
             while (section.index < section.data.length && section.index < section.limit && rendered < section.step) {
-                const card = createCard(section.data[section.index]);
-                container.appendChild(card);
-                section.index++;
-                rendered++;
+                container.appendChild(createCard(section.data[section.index]));
+                section.index++; rendered++;
             }
 
             const remaining = Math.min(section.limit, section.data.length) - section.index;
-            if (remaining > 0 && btn) {
-                btn.style.display = 'block';
-                btn.innerText = `Показать еще (${remaining})`;
-            } else if(btn) {
-                btn.style.display = 'none';
-            }
+            if (remaining > 0 && btn) { btn.style.display = 'block'; btn.innerText = `Показать еще (${remaining})`; } 
+            else if(btn) { btn.style.display = 'none'; }
         }
 
         function handleLoadMore(key) { renderSection(key); }
@@ -602,26 +468,13 @@ HTML_TEMPLATE = """
 </html>
 """
 
-CATEGORIES_MAP = {
-    "discounts": "Скидки дня",
-    "free_single": "Одиночные бесплатные игры",
-    "coop_disc": "Кооперативные скидки",
-    "coop_free": "Мультиплеерная халява",
-    "upcoming": "Скоро станут бесплатными",
-    # 5 новых разделов:
-    "action_games": "🔥 Топ Экшены / Боевики",
-    "strategy_games": "🧠 Тактика и Стратегии",
-    "rpg_games": "🔮 Ролевые миры (RPG)",
-    "simulator_games": "🚜 Симуляторы реальности",
-    "adventure_games": "🧭 Приключения и Квесты"
-}
-
+# ==================== FLASK МАРШРУТЫ ====================
 @app.route("/")
 def index():
     global_currency = request.args.get("currency", "EUR")
     if global_currency not in REGIONS: global_currency = "EUR"
         
-    if not STEAM_DATA_CACHE[global_currency]:
+    if not STEAM_DATA_CACHE.get(global_currency):
         data = get_steam_data(global_currency)
         STEAM_DATA_CACHE[global_currency] = data
     else:
@@ -638,56 +491,43 @@ def index():
 def telegram_webhook():
     try:
         update = request.get_json(silent=True)
-        if not update or "message" not in update: return "OK", 200
-        
+        if not update or not update.get("message"):
+            return "OK", 200
+            
         message = update["message"]
         text = message.get("text", "")
-        chat_id = message["chat"]["id"]
+        chat_id = message.get("chat", {}).get("id")
 
-        if text.startswith("/start"):
+        if text.startswith("/start") and chat_id:
             domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN") or os.environ.get("RAILWAY_STATIC_URL") or "localhost"
             domain = domain.replace("https://", "").replace("http://", "").rstrip('/')
-            host_url = f"https://{domain}"
             
-            # ИСПРАВЛЕН КРИТЕРИЙ: Максимально стандартный короткий текст без смайликов
             welcome_text = "Сервис поиска скидок Steam. Нажмите на кнопку ниже для перехода в каталог."
-            
-            reply_markup = {
-                "inline_keyboard": [[{"text": "Открыть Web App", "web_app": {"url": host_url}}]]
-            }
+            reply_markup = {"inline_keyboard": [[{"text": "Открыть каталог", "web_app": {"url": f"https://{domain}"}}]]}
             
             requests.post(
                 f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
                 json={"chat_id": chat_id, "text": welcome_text, "reply_markup": reply_markup},
                 timeout=10
             )
-    except Exception as e:
-        print(f"[Webhook] Ошибка лички: {e}")
+    except: pass
     return "OK", 200
 
 @app.before_request
 def init_telegram_webhook():
     global WEBHOOK_SET
     if not WEBHOOK_SET:
-        railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN") or os.environ.get("RAILWAY_STATIC_URL")
-        if railway_domain:
-            railway_domain = railway_domain.replace("https://", "").replace("http://", "").rstrip('/')
-            webhook_url = f"https://{railway_domain}/telegram-webhook"
+        domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN") or os.environ.get("RAILWAY_STATIC_URL")
+        if domain:
+            domain = domain.replace("https://", "").replace("http://", "").rstrip('/')
             try:
                 requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/deleteWebhook", timeout=5)
-                requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/setWebhook", json={"url": webhook_url}, timeout=5)
-                print(f"[Webhook] Вебхук установлен на {webhook_url}")
-            except Exception as e:
-                print(f"[Webhook] Сбой установки: {e}")
+                requests.post(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/setWebhook", json={"url": f"https://{domain}/telegram-webhook", "allowed_updates": ["message"]}, timeout=5)
+            except: pass
         WEBHOOK_SET = True
 
 if __name__ == "__main__":
     download_pixel_font()
-    
-    # 1 поток фонового обновления кэша всех 10 тем
     threading.Thread(target=steam_cache_worker, daemon=True).start()
-    # 2 поток умного планировщика постов без дублей каждые 2 часа
     threading.Thread(target=telegram_scheduler_worker, daemon=True).start()
-    
-    port = int(os.environ.get("PORT", 5000))
-    app.run(debug=False, port=port, host="0.0.0.0")
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
