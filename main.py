@@ -22,10 +22,8 @@ TG_CHANNEL_ID = os.environ.get("TG_CHANNEL_ID", "").strip()
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 MODEL_NAME = "llama-3.3-70b-versatile"
 
-# Флаг, чтобы вебхук ставился только 1 раз при запуске
 WEBHOOK_SET = False
 
-# Глобальный кэш данных Steam и блока "НОВОЕ!"
 STEAM_DATA_CACHE = {
     "EUR": None,
     "USD": None,
@@ -66,17 +64,25 @@ def clean_price(price_str, currency_code):
     if "free" in txt or "бесплатно" in txt or "испробовать" in txt:
         return 0.0
     
-    p_text = price_str.replace("pуб.", "").replace("руб.", "").replace("₽", "").replace("€", "").replace("$", "")
-    p_text = p_text.replace("&nbsp;", "").strip()
-    
+    # Жесткая чистка для РУБЛЕЙ (убираем копейки после запятой или точки)
     if currency_code == "RUB":
-        p_text = p_text.replace(" ", "").replace(",", ".")
-        if p_text.count('.') > 1:
-            parts = p_text.split('.')
-            p_text = "".join(parts[:-1]) + "." + parts[-1]
-    else:
-        p_text = p_text.replace(" ", "").replace(",", ".")
-
+        p_text = price_str.replace("pуб.", "").replace("руб.", "").replace("₽", "").strip()
+        p_text = p_text.replace(" ", "").replace("\xa0", "")
+        # Отсекаем всё, что после запятой или точки
+        if "," in p_text:
+            p_text = p_text.split(",")[0]
+        if "." in p_text:
+            p_text = p_text.split(".")[0]
+        
+        p_text = "".join(c for c in p_text if c.isdigit())
+        try:
+            return float(p_text) if p_text else 0.0
+        except ValueError:
+            return 0.0
+    
+    # Для других валют (EUR, USD)
+    p_text = price_str.replace("€", "").replace("$", "").replace("&nbsp;", "").strip()
+    p_text = p_text.replace(" ", "").replace(",", ".")
     p_text = "".join(c for c in p_text if c.isdigit() or c == ".")
     try:
         return float(p_text) if p_text else 0.0
@@ -110,7 +116,11 @@ def get_prices_for_all_regions(app_id):
                         results[code] = {"price": "FREE", "discount": "100%"}
                     else:
                         cleaned = clean_price(txt, code)
-                        results[code] = {"price": f"{cleaned:.2f} {cfg['symbol']}", "discount": disc}
+                        # Для рублей выводим без дробной части
+                        if code == "RUB":
+                            results[code] = {"price": f"{int(cleaned)} {cfg['symbol']}", "discount": disc}
+                        else:
+                            results[code] = {"price": f"{cleaned:.2f} {cfg['symbol']}", "discount": disc}
                 else:
                     results[code] = {"price": "N/A", "discount": "0%"}
             else:
@@ -142,7 +152,8 @@ def get_steam_data(global_currency="EUR"):
                 if not disc_div or not price_div: continue
                 
                 discount = f"-{abs(int(disc_div.text.replace('%', '').strip()))}%"
-                price = f"{clean_price(price_div.text, global_currency):.2f} {symbol}"
+                price_val = clean_price(price_div.text, global_currency)
+                price = f"{int(price_val)} {symbol}" if global_currency == "RUB" else f"{price_val:.2f} {symbol}"
                 
                 discounted.append({"id": app_id, "name": name, "discount": discount, "price": price, "img": img_url, "tags": ["Steam"], "type": "discount"})
     except Exception: pass
@@ -158,7 +169,7 @@ def get_steam_data(global_currency="EUR"):
                 app_id = extract_game_id(row)
                 img_url = row.find("div", class_="search_capsule").find("img")["src"] if row.find("div", class_="search_capsule") and row.find("div", class_="search_capsule").find("img") else ""
                 free_single.append({"id": app_id, "name": name, "discount": "100%", "price": "FREE", "img": img_url, "tags": ["Single"], "type": "free_single"})
-                if len(free_single) >= 14: break
+                if len(free_single) >= 20: break
     except Exception: pass
 
     coop_disc = []
@@ -177,10 +188,11 @@ def get_steam_data(global_currency="EUR"):
                 if not disc_div or not price_div: continue
                 
                 discount = f"-{abs(int(disc_div.text.replace('%', '').strip()))}%"
-                price = f"{clean_price(price_div.text, global_currency):.2f} {symbol}"
+                price_val = clean_price(price_div.text, global_currency)
+                price = f"{int(price_val)} {symbol}" if global_currency == "RUB" else f"{price_val:.2f} {symbol}"
 
                 coop_disc.append({"id": app_id, "name": name, "discount": discount, "price": price, "img": img_url, "tags": ["Co-op"], "type": "coop_disc"})
-                if len(coop_disc) >= 10: break
+                if len(coop_disc) >= 20: break
     except Exception: pass
 
     coop_free = []
@@ -194,7 +206,7 @@ def get_steam_data(global_currency="EUR"):
                 app_id = extract_game_id(row)
                 img_url = row.find("div", class_="search_capsule").find("img")["src"] if row.find("div", class_="search_capsule") and row.find("div", class_="search_capsule").find("img") else ""
                 coop_free.append({"id": app_id, "name": name, "discount": "100%", "price": "FREE", "img": img_url, "tags": ["Multiplayer"], "type": "coop_free"})
-                if len(coop_free) >= 10: break
+                if len(coop_free) >= 20: break
     except Exception: pass
 
     upcoming = []
@@ -209,11 +221,11 @@ def get_steam_data(global_currency="EUR"):
                 date_div = row.find("div", class_="search_released")
                 release_date = date_div.text.strip() if date_div and date_div.text.strip() else "TBA"
                 upcoming.append({"id": app_id, "name": name, "discount": "FREE", "price": "FREE", "img": img_url, "tags": [release_date], "type": "upcoming"})
-                if len(upcoming) >= 14: break
+                if len(upcoming) >= 20: break
     except Exception: pass
 
     return {
-        "discounts": discounted[:50],
+        "discounts": discounted[:100],
         "free_single": free_single,
         "coop_disc": coop_disc,
         "coop_free": coop_free,
@@ -225,7 +237,6 @@ def steam_cache_worker():
     while True:
         print("[Кэш] Обновление данных Steam по всем регионам...")
         now = time.time()
-        # Очистка старых игр из ленты 24 часов
         HOT_FRESH_GAMES = [g for g in HOT_FRESH_GAMES if now - g["added_at"] < 86400]
         
         for currency in ["EUR", "USD", "RUB"]:
@@ -258,7 +269,7 @@ def generate_game_card_image(game_name, category, prices, img_url, is_ultra_hot=
     
     header_bg = "#ff5722" if is_ultra_hot else "#ffffff"
     header_txt_color = "#ffffff" if is_ultra_hot else "#000000"
-    header_text = "🔥 HOT TEMPORARY FREEBIE! 🔥" if is_ultra_hot else "STEAM HIDDEN GEMS RADAR"
+    header_text = "🔥 HOT SELECTION / ТОП ПОДБОРКА 🔥" if is_ultra_hot else "STEAM HIDDEN GEMS RADAR"
     
     draw.rectangle([40, 40, 960, 100], fill=header_bg, outline="#000000", width=5)
     draw.text((65, 58), header_text, fill=header_txt_color, font=font_title)
@@ -272,7 +283,7 @@ def generate_game_card_image(game_name, category, prices, img_url, is_ultra_hot=
     except Exception:
         draw.rectangle([70, 140, 430, 340], fill="#7a7a7a", outline="#000000", width=4)
 
-    draw.text((470, 140), "GAME:", fill="#7a7a7a", font=font_sub)
+    draw.text((470, 140), "MAIN GAME:", fill="#7a7a7a", font=font_sub)
     
     if len(game_name) > 24:
         draw.text((470, 165), game_name[:24], fill="#000000", font=font_title)
@@ -317,10 +328,12 @@ def generate_game_card_image(game_name, category, prices, img_url, is_ultra_hot=
 
 def run_telegram_autopost_logic():
     global HOT_FRESH_GAMES
-    print("[Бот] Анализ глубоких страниц Steam в поисках Жгучей Халявы...")
-    categories = {"Халява / Раздачи": [], "Лучшее дня": [], "Для друзей": []}
+    print("[Бот] Сбор подборки игр (до 6 штук)...")
+    
+    categories = {"Халява / Раздачи": [], "Для друзей": [], "Лучшее дня": []}
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
+    # Парсим первые 3 страницы скидок
     for page in range(1, 4):
         time.sleep(1)
         try:
@@ -333,7 +346,6 @@ def run_telegram_autopost_logic():
                     
                     app_id = extract_game_id(row)
                     
-                    # ФИЛЬТР: Пропускаем игру, если она уже публиковалась за последние 24 часа
                     if any(str(g["game"]["id"]) == str(app_id) for g in HOT_FRESH_GAMES):
                         continue
 
@@ -344,93 +356,92 @@ def run_telegram_autopost_logic():
                     
                     disc_text = disc_div.text.strip() if disc_div else "0%"
                     price_text = price_div.text.strip() if price_div else "0.00"
-                    
                     disc_val = abs(int(disc_text.replace('%','').replace('-','').strip())) if '%' in disc_text else 0
-                    game_data = {"id": app_id, "name": name, "price": price_text, "discount": disc_text, "disc_val": disc_val, "img": img_url, "tags": ["New!"]}
                     
-                    if disc_val == 100 or "free" in price_text.lower() or "бесплатно" in price_text.lower() or disc_val >= 80:
+                    game_data = {"id": app_id, "name": name, "price": price_text, "discount": disc_text, "disc_val": disc_val, "img": img_url}
+                    
+                    # Распределяем по категориям
+                    if disc_val == 100 or "free" in price_text.lower() or "бесплатно" in price_text.lower() or disc_val >= 85:
                         categories["Халява / Раздачи"].append(game_data)
                     elif "category2=38" in row.get('href', '') or "category2=9" in row.get('href', ''):
                         categories["Для друзей"].append(game_data)
-                    else:
+                    elif disc_val >= 50:
                         categories["Лучшее дня"].append(game_data)
         except Exception as e:
             print(f"[Бот] Ошибка сбора: {e}")
 
-    chosen_game = None
-    chosen_category = ""
-    is_ultra_hot = False
-
+    # Выбираем до 6 игр
+    selected_games = []
+    
+    # Сначала берём самую сочную халяву
     if categories["Халява / Раздачи"]:
         categories["Халява / Раздачи"].sort(key=lambda x: x["disc_val"], reverse=True)
-        chosen_game = categories["Халява / Раздачи"][0]
-        chosen_category = "Халява / Раздачи"
-        is_ultra_hot = True
-    else:
-        all_other = categories["Лучшее дня"] + categories["Для друзей"]
-        if all_other:
-            all_other.sort(key=lambda x: x["disc_val"], reverse=True)
-            chosen_game = random.choice(all_other[:3])
-            chosen_category = "Для друзей" if chosen_game in categories["Для друзей"] else "Лучшее дня"
+        selected_games.extend(categories["Халява / Раздачи"][:2])
+    
+    # Кооп игры для друзей
+    if categories["Для друзей"]:
+        categories["Для друзей"].sort(key=lambda x: x["disc_val"], reverse=True)
+        selected_games.extend(categories["Для друзей"][:2])
+        
+    # Добиваем обычными отличными скидками, чтобы было 6 штук
+    if categories["Лучшее дня"] and len(selected_games) < 6:
+        categories["Лучшее дня"].sort(key=lambda x: x["disc_val"], reverse=True)
+        needed = 6 - len(selected_games)
+        selected_games.extend(categories["Лучшее дня"][:needed])
 
-    if not chosen_game:
-        print("[Бот] Ничего интересного (или нового) не найдено.")
+    if not selected_games:
+        print("[Бот] Не удалось найти подходящие игры для поста.")
         return
 
-    # Записываем в кэш 24 часов
-    HOT_FRESH_GAMES.append({"game": chosen_game, "added_at": time.time()})
-
-    print(f"[Бот] Выбрана игра для публикации: '{chosen_game['name']}' ({chosen_category})")
+    # Главная игра подборки пойдет на картинку
+    main_game = selected_games[0]
+    is_ultra_hot = any(g in categories["Халява / Раздачи"] for g in selected_games)
     
-    regional_prices = get_prices_for_all_regions(chosen_game["id"])
-    photo_buffer = generate_game_card_image(chosen_game["name"], chosen_category, regional_prices, chosen_game["img"], is_ultra_hot)
+    for g in selected_games:
+        HOT_FRESH_GAMES.append({"game": g, "added_at": time.time()})
 
-    # ИИ ГЕНЕРАЦИЯ ОБЗОРА С ПРОВЕРКАМИ
-    ai_text = "Интересная игра со скидкой уже доступна в магазине Steam!"
-    if not GROQ_API_KEY:
-        print("[Бот] GROQ_API_KEY не установлен, используем стандартное описание.")
-    else:
+    # Генерируем описание через GROQ для ВСЕХ игр сразу
+    ai_descriptions = "Описания от ИИ временно недоступны."
+    if GROQ_API_KEY:
         try:
             client = Groq(api_key=GROQ_API_KEY)
-            prices_summary = ", ".join([f"{k}: {v['price']} (скидка {v['discount']})" for k, v in regional_prices.items()])
-            
+            games_list_text = "\n".join([f"- {g['name']} (Скидка: {g['discount']})" for g in selected_games])
             prompt_content = (
-                f"Ты — опытный игровой аналитик. Напиши краткий, емкий обзор для Телеграм-канала о малоизвестной игре '{chosen_game['name']}'.\n"
-                f"Данные игры:\n"
-                f"- Категория: #{chosen_category.replace(' ', '_')}\n"
-                f"- Цены по регионам: {prices_summary}\n\n"
-                f"Требования к тексту:\n"
-                f"1. Расскажи в 2 коротких предложениях, про что эта игра и в чём её фишка.\n"
-                f"2. Добавь 1 предложение с экспертным мнением о выгоде покупки по указанным региональным скидкам.\n"
-                f"Пиши на русском языке, живым геймерским стилем, без штампов и воды."
+                f"Ты опытный игровой аналитик. Вот список игр со скидками:\n{games_list_text}\n\n"
+                f"Напиши для КАЖДОЙ игры ровно 1-2 предложения: о чем сюжет и в чем главная фишка геймплея. "
+                f"Не используй Markdown-форматирование, пиши просто текст.\n"
+                f"Формат:\n🎮 [Название] - [Описание]"
             )
-            if is_ultra_hot:
-                prompt_content += "\nВНИМАНИЕ: На эту игру сейчас действует максимальная халява, выдели это особо!"
-
             completion = client.chat.completions.create(
-                model=MODEL_NAME, messages=[{"role": "user", "content": prompt_content}], timeout=20
+                model=MODEL_NAME, messages=[{"role": "user", "content": prompt_content}], timeout=30
             )
             if completion.choices:
-                ai_text = completion.choices[0].message.content.strip()
+                ai_descriptions = completion.choices[0].message.content.strip()
         except Exception as e:
-            print(f"[Бот] Ошибка генерации текста через Groq API: {e}")
+            print(f"[Бот] Ошибка Groq API: {e}")
 
-    safe_category = html.escape(chosen_category.replace(' ', '_'))
-    safe_game_name = html.escape(chosen_game['name'])
-    safe_ai_text = html.escape(ai_text)
+    # Картинка генерируется по первой "главной" игре
+    regional_prices = get_prices_for_all_regions(main_game["id"])
+    photo_buffer = generate_game_card_image(main_game["name"], "Свежая Подборка", regional_prices, main_game["img"], is_ultra_hot)
+
+    # Формируем итоговый пост
+    prefix = "🚨 🔥 <b>ТОП ПОДБОРКА ИГР И ХАЛЯВЫ</b> 🔥 🚨\n\n"
     
-    prices_block = ""
-    for r_code, r_data in regional_prices.items():
-        prices_block += f"• <b>{r_code}:</b> {html.escape(r_data['price'])} ({html.escape(r_data['discount'])})\n"
+    games_block = ""
+    for g in selected_games:
+        safe_name = html.escape(g['name'])
+        link = f"https://store.steampowered.com/app/{g['id']}"
+        games_block += f"🔹 <a href='{link}'><b>{safe_name}</b></a> | Скидка: <b>{g['discount']}</b>\n"
 
-    prefix = "🚨 🔥 <b>ОГРАНИЧЕННАЯ ХАЛЯВА</b> 🔥 🚨\n" if is_ultra_hot else ""
+    safe_ai_text = html.escape(ai_descriptions)
+
     tg_message = (
         f"{prefix}"
-        f"👾 <b>КАТЕГОРИЯ:</b> #{safe_category}\n"
-        f"🔥 <b>ИГРА:</b> {safe_game_name}\n\n"
-        f"💰 <b>РЕГИОНАЛЬНЫЕ СКИДКИ:</b>\n{prices_block}\n"
-        f"📝 <b>ОБЗОР ИИ:</b>\n{safe_ai_text}\n\n"
-        f"🎮 <b>Ссылка на Steam:</b> https://store.steampowered.com/app/{chosen_game['id']}"
+        f"<b>СПИСОК ИГР:</b>\n"
+        f"{games_block}\n"
+        f"🤖 <b>ОБЗОР ОТ ИИ (О ЧЁМ ИГРЫ):</b>\n"
+        f"<i>{safe_ai_text}</i>\n\n"
+        f"👇 Заходи в наше Web-приложение по кнопке ниже, чтобы посмотреть цены для разных стран и еще больше игр!"
     )
 
     try:
@@ -441,21 +452,21 @@ def run_telegram_autopost_logic():
             timeout=15
         )
         if tg_res.status_code == 200:
-            print("[Бот] Пост успешно улетел в Телеграм-канал!")
+            print("[Бот] Подборка из 6 игр успешно отправлена в канал!")
         else:
             print(f"[Бот] Ошибка ТГ: {tg_res.text}")
     except Exception as e:
         print(f"[Бот] Ошибка отправки: {e}")
 
 def telegram_scheduler_worker():
-    time.sleep(12)
+    time.sleep(15)
     try:
         run_telegram_autopost_logic()
     except Exception as e:
         print(f"[Поток] Ошибка старта: {e}")
         
     while True:
-        time.sleep(7200)
+        time.sleep(10800) # Пост каждые 3 часа
         try:
             run_telegram_autopost_logic()
         except Exception as e:
@@ -629,7 +640,7 @@ HTML_TEMPLATE = """
 
     <div class="container">
         {% if fresh_games %}
-        <div class="section-title fresh-title">СВЕЖАЯ ИНФОРМАЦИЯ: НОВОЕ!</div>
+        <div class="section-title fresh-title">НОВОЕ ИЗ КАНАЛА!</div>
         <div id="fresh-container">
             {% for entry in fresh_games %}
             <div class="game-card bounce-in-active" data-id="{{ entry.game.id }}" style="opacity: 1; transform: scale(1);">
@@ -662,7 +673,7 @@ HTML_TEMPLATE = """
         {% endif %}
 
         <div id="default-game-sections">
-            <div class="section-title">Дешёвые игры - скидки (50 игр)</div>
+            <div class="section-title">Скидки (до 100 игр)</div>
             <div id="discounts-container"></div>
             <div id="discounts-btn" class="load-more-btn bounce-in-active" onclick="handleLoadMore('discounts')">Ещё?</div>
 
@@ -674,11 +685,11 @@ HTML_TEMPLATE = """
             <div id="coop_disc-container"></div>
             <div id="coop_disc-btn" class="load-more-btn bounce-in-active" onclick="handleLoadMore('coop_disc')">Ещё?</div>
 
-            <div class="section-title">Бесплатные игры с другом</div>
+            <div class="section-title">Бесплатные кооп игры</div>
             <div id="coop_free-container"></div>
             <div id="coop_free-btn" class="load-more-btn bounce-in-active" onclick="handleLoadMore('coop_free')">Ещё?</div>
 
-            <div class="section-title">Можно получить бесплатно скоро</div>
+            <div class="section-title">Ожидаемые новинки</div>
             <div id="upcoming-container"></div>
             <div id="upcoming-btn" class="load-more-btn bounce-in-active" onclick="handleLoadMore('upcoming')">Ещё?</div>
         </div>
@@ -689,11 +700,11 @@ HTML_TEMPLATE = """
         const currentGlobalCurrency = "{{ current_currency }}";
         
         const state = {
-            discounts: { data: rawData.discounts || [], index: 0, step: 3, limit: 50 },
-            free_single: { data: rawData.free_single || [], index: 0, step: 3, limit: 14 },
-            coop_disc: { data: rawData.coop_disc || [], index: 0, step: 3, limit: 10 },
-            coop_free: { data: rawData.coop_free || [], index: 0, step: 3, limit: 10 },
-            upcoming: { data: rawData.upcoming || [], index: 0, step: 3, limit: 14 }
+            discounts: { data: rawData.discounts || [], index: 0, step: 5, limit: 100 },
+            free_single: { data: rawData.free_single || [], index: 0, step: 5, limit: 20 },
+            coop_disc: { data: rawData.coop_disc || [], index: 0, step: 5, limit: 20 },
+            coop_free: { data: rawData.coop_free || [], index: 0, step: 5, limit: 20 },
+            upcoming: { data: rawData.upcoming || [], index: 0, step: 5, limit: 20 }
         };
 
         function toggleSelect(e) { e.stopPropagation(); document.getElementById('currency-wrapper').classList.toggle('open'); }
@@ -719,7 +730,6 @@ HTML_TEMPLATE = """
             document.getElementById('submenu-' + appId).classList.toggle('open'); 
         }
 
-        // АСИНХРОННАЯ СМЕНА ВАЛЮТЫ ДЛЯ 1 ИГРЫ (ИСПРАВЛЕНО)
         function changeGameCurrency(appId, targetCurr) {
             const card = document.querySelector(`.game-card[data-id="${appId}"]`);
             if (!card) return;
@@ -728,7 +738,7 @@ HTML_TEMPLATE = """
             const discBadge = card.querySelector('.badge.discount');
             const oldPrice = priceBadge.innerText;
             
-            priceBadge.innerText = '...'; // Индикатор загрузки
+            priceBadge.innerText = '...'; 
             
             fetch(`/api/prices/${appId}`)
                 .then(res => res.json())
@@ -871,7 +881,6 @@ def index():
         fresh_games=HOT_FRESH_GAMES
     )
 
-# ==================== API ЭНДПОИНТ ДЛЯ СМЕНЫ ВАЛЮТЫ 1 ИГРЫ ====================
 @app.route("/api/prices/<app_id>")
 def get_prices_api(app_id):
     try:
@@ -879,9 +888,7 @@ def get_prices_api(app_id):
         return json.dumps(prices)
     except Exception as e:
         return json.dumps({"error": str(e)}), 500
-# ==============================================================================
 
-# ==================== ОБРАБОТКА КОМАНДЫ /START (WEBHOOK) ====================
 @app.route("/telegram-webhook", methods=["POST"])
 def telegram_webhook():
     try:
@@ -903,8 +910,8 @@ def telegram_webhook():
             host_url = f"https://{domain}"
             
             welcome_text = (
-                "Привет! я бот крытых скидок и халявы в Steam.\n\n"
-                "нажми кнопку ниже, чтобы открыть наше Web App приложение и посмотреть весь список игр!"
+                "Привет! Я бот скрытых скидок и халявы в Steam.\n\n"
+                "Нажми кнопку ниже, чтобы открыть наше Web App приложение и посмотреть весь список игр!"
             )
             
             reply_markup = {
@@ -954,7 +961,6 @@ def init_telegram_webhook():
             except Exception as e:
                 print(f"[Webhook] Ошибка: {e}")
         WEBHOOK_SET = True
-# ============================================================================
 
 if __name__ == "__main__":
     download_pixel_font()
