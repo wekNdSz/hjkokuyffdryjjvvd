@@ -1,4 +1,3 @@
-
 import os
 import sys
 import json
@@ -17,12 +16,15 @@ from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 
-# ==================== НАСТРОЙКИ (ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ И ДЕФОЛТЫ) ====================
-TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN").strip()
+# ==================== НАСТРОЙКИ И КЛЮЧИ ====================
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "").strip()
 TG_CHANNEL_ID = os.environ.get("TG_CHANNEL_ID", "").strip()
+
+# Двойная проверка ключа Groq
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 
-MODEL_NAME = "llama3-8b-8192" 
+
+MODEL_NAME = "llama-3.1-8b-instant" 
 WEBHOOK_SET = False
 
 STEAM_DATA_CACHE = {
@@ -40,9 +42,13 @@ REGIONS = {
     "RUB": {"country": "RU", "symbol": "₽", "lang": "ru-RU,ru;q=0.9"}
 }
 
-BANNED_GAMES = ["pubg", "counter-strike", "dota", "apex legends", "warframe", "war thunder", "destiny 2", "rainbow six", "free to play", "play for free"]
+# Жёсткий фильтр попсы, чтобы вытаскивать только инди-жемчужины и реальные сливы
+BANNED_GAMES = [
+    "pubg", "counter-strike", "dota", "apex legends", "warframe", "war thunder", 
+    "destiny 2", "rainbow six", "gta", "grand theft auto", "witcher", "cyberpunk", 
+    "red dead", "fifa", "ea sports", "call of duty", "battlefield", "rust", "halflife"
+]
 FONT_PATH = "PressStart2P.ttf"
-PLACEHOLDER_IMG = "https://pub-c5e31b5cdafb419a91624d1024ee2702.r2.dev/mock_steam.png"
 
 def is_ignored(name):
     return any(banned in name.lower() for banned in BANNED_GAMES)
@@ -61,7 +67,7 @@ def clean_price(price_str, currency_code):
     if not price_str:
         return 0.0
     txt = price_str.lower()
-    if any(word in txt for word in ["free", "бесплатно", "испробовать", "play"]):
+    if any(word in txt for word in ["free", "бесплатно", "испробовать", "play free"]):
         return 0.0
     
     if currency_code == "RUB":
@@ -91,7 +97,7 @@ def get_prices_for_all_regions(app_id):
     for code, cfg in REGIONS.items():
         cookies = {"wants_mature_content": "1", "birthtime": "288028801", "last_steam_country": cfg["country"]}
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept-Language": cfg["lang"]}
-        time.sleep(0.2)
+        time.sleep(0.1)
         try:
             r = requests.get(f"https://store.steampowered.com/app/{app_id}/", headers=headers, cookies=cookies, timeout=5)
             if r.status_code == 200:
@@ -135,7 +141,9 @@ def get_steam_data(global_currency="EUR"):
                     app_id = extract_game_id(row)
                     if not app_id: continue
                     
-                    img_url = f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{app_id}/header.jpg"
+                    # Жесткая привязка к CDN Steam без проксирования картинок
+                    img_url = f"https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/header.jpg"
+                    
                     disc_div = row.find("div", class_="discount_pct")
                     price_div = row.find("div", class_="discount_final_price") or row.find("div", class_="search_price")
                     
@@ -157,11 +165,12 @@ def get_steam_data(global_currency="EUR"):
             pass
         return games
 
-    discounts = fetch_url("https://store.steampowered.com/search/?specials=1&ndl=1", "Steam")
-    free_single = fetch_url("https://store.steampowered.com/search/?maxprice=free&ndl=1", "Single")
-    coop_disc = fetch_url("https://store.steampowered.com/search/?category2=38,9&specials=1&ndl=1", "Co-op")
-    coop_free = fetch_url("https://store.steampowered.com/search/?maxprice=free&category2=38,9&ndl=1", "Multiplayer")
-    upcoming = fetch_url("https://store.steampowered.com/search/?filter=comingsoon&ndl=1", "Upcoming")
+    # Модернизированные урлы для поиска скрытых скидок, а не хайпового топа
+    discounts = fetch_url("https://store.steampowered.com/search/?specials=1&sort_by=Reviews_DESC&ndl=1", "Hidden Gems")
+    free_single = fetch_url("https://store.steampowered.com/search/?maxprice=free&sort_by=Released_DESC&ndl=1", "Fresh Free")
+    coop_disc = fetch_url("https://store.steampowered.com/search/?category2=38,9&specials=1&ndl=1", "Co-op Sale")
+    coop_free = fetch_url("https://store.steampowered.com/search/?maxprice=free&category2=38,9&sort_by=Reviews_DESC&ndl=1", "Top Co-op")
+    upcoming = fetch_url("https://store.steampowered.com/search/?filter=comingsoon&os=win&ndl=1", "Upcoming")
 
     return {
         "discounts": discounts[:100],
@@ -231,7 +240,7 @@ def generate_game_card_image(game_name, category, prices, img_url, is_ultra_hot=
         
     draw.rectangle([470, y_meta_start + 20, 490 + text_w, y_meta_start + 55], fill="#4caf50", outline="#000000", width=3)
     draw.text((480, y_meta_start + 28), cat_text, fill="#ffffff", font=font_main)
-    draw.text((70, 375), "REGIONAL PRICES & DISCOUNTS:", fill="#7a7a7a", font=font_sub)
+    draw.text((70, 375), "REGIONAL PRICES:", fill="#7a7a7a", font=font_sub)
     
     y_offset = 410
     for reg, p_info in prices.items():
@@ -259,39 +268,8 @@ def run_telegram_autopost_logic():
     cat_cool_free = []  
     cat_discounts = []  
 
-    # Парсинг платных скидок и 100% раздач
     try:
-        for page in range(1, 4):
-            res = requests.get(f"https://store.steampowered.com/search/?specials=1&page={page}", headers=headers, timeout=10)
-            soup = BeautifulSoup(res.text, "html.parser")
-            for row in soup.find_all("a", class_="search_result_row"):
-                name = row.find("span", class_="title").text.strip() if row.find("span", class_="title") else ""
-                if not name or is_ignored(name): continue
-                app_id = extract_game_id(row)
-                if not app_id or any(str(g["game"]["id"]) == str(app_id) for g in HOT_FRESH_GAMES): continue
-                
-                img_url = f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{app_id}/header.jpg"
-                disc_div = row.find("div", class_="discount_pct")
-                price_div = row.find("div", class_="discount_final_price")
-                
-                disc_text = disc_div.text.strip() if disc_div else "0%"
-                price_text = price_div.text.strip() if price_div else "0.00"
-                disc_val = abs(int(disc_text.replace('%','').replace('-','').strip())) if '%' in disc_text else 0
-                
-                game_data = {"id": app_id, "name": name, "price": price_text, "discount": disc_text, "disc_val": disc_val, "img": img_url, "cat": "Скидка"}
-                
-                if disc_val == 100 or any(w in price_text.lower() for w in ["free", "бесплатно"]):
-                    game_data["cat"] = "Халява"
-                    game_data["price"] = "FREE"
-                    game_data["discount"] = "100%"
-                    cat_freebies.append(game_data)
-                elif disc_val >= 30:
-                    cat_discounts.append(game_data)
-    except Exception: pass
-
-    # Парсинг стабильно хороших бесплатных тайтлов
-    try:
-        res = requests.get("https://store.steampowered.com/search/?maxprice=free&category2=9,38&ndl=1", headers=headers, timeout=10)
+        res = requests.get("https://store.steampowered.com/search/?specials=1&sort_by=Released_DESC", headers=headers, timeout=10)
         soup = BeautifulSoup(res.text, "html.parser")
         for row in soup.find_all("a", class_="search_result_row"):
             name = row.find("span", class_="title").text.strip() if row.find("span", class_="title") else ""
@@ -299,7 +277,35 @@ def run_telegram_autopost_logic():
             app_id = extract_game_id(row)
             if not app_id or any(str(g["game"]["id"]) == str(app_id) for g in HOT_FRESH_GAMES): continue
             
-            img_url = f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{app_id}/header.jpg"
+            img_url = f"https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/header.jpg"
+            disc_div = row.find("div", class_="discount_pct")
+            price_div = row.find("div", class_="discount_final_price")
+            
+            disc_text = disc_div.text.strip() if disc_div else "0%"
+            price_text = price_div.text.strip() if price_div else "0.00"
+            disc_val = abs(int(disc_text.replace('%','').replace('-','').strip())) if '%' in disc_text else 0
+            
+            game_data = {"id": app_id, "name": name, "price": price_text, "discount": disc_text, "disc_val": disc_val, "img": img_url, "cat": "Скидка"}
+            
+            if disc_val == 100 or any(w in price_text.lower() for w in ["free", "бесплатно"]):
+                game_data["cat"] = "Халява"
+                game_data["price"] = "FREE"
+                game_data["discount"] = "100%"
+                cat_freebies.append(game_data)
+            elif disc_val >= 40:
+                cat_discounts.append(game_data)
+    except Exception: pass
+
+    try:
+        res = requests.get("https://store.steampowered.com/search/?maxprice=free&sort_by=Reviews_DESC&ndl=1", headers=headers, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
+        for row in soup.find_all("a", class_="search_result_row"):
+            name = row.find("span", class_="title").text.strip() if row.find("span", class_="title") else ""
+            if not name or is_ignored(name): continue
+            app_id = extract_game_id(row)
+            if not app_id or any(str(g["game"]["id"]) == str(app_id) for g in HOT_FRESH_GAMES): continue
+            
+            img_url = f"https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/header.jpg"
             game_data = {"id": app_id, "name": name, "price": "FREE", "discount": "100%", "disc_val": 100, "img": img_url, "cat": "Бесплатно"}
             cat_cool_free.append(game_data)
     except Exception: pass
@@ -330,19 +336,18 @@ def run_telegram_autopost_logic():
     if GROQ_API_KEY:
         try:
             client = Groq(api_key=GROQ_API_KEY)
-            games_list_text = "\n".join([f"- {g['name']} (Категория: {g['cat']})" for g in selected_games])
+            games_list_text = "\n".join([f"- {g['name']}" for g in selected_games])
             prompt_content = (
-                f"Ты — геймерский ИИ аналитик под ником zeptg. Напиши для каждой игры строго ОДНО ультра-короткое предложение, "
-                f"раскрывая её главную фишку. Будь честен, отсекай скуку. Твой стиль: адаптивный, точечный, сжатый.\n"
+                f"Ты ИИ zeptg. Напиши для каждой игры ОДНО короткое предложение её фишки.\n"
                 f"Список игр:\n{games_list_text}\n"
-                f"Формат вывода строго такой:\n🎮 [Название игры] — [Одно предложение]. Не выделяй текст жирным markdown."
+                f"Формат вывода строго: 🎮 [Название игры] — [Описание]. Без жирного шрифта."
             )
             completion = client.chat.completions.create(
                 model=MODEL_NAME, 
                 messages=[{"role": "user", "content": prompt_content}], 
-                max_tokens=600,
-                temperature=0.7,
-                timeout=30
+                max_tokens=400,
+                temperature=0.8,
+                timeout=25
             )
             if completion.choices:
                 ai_descriptions = completion.choices[0].message.content.strip()
@@ -358,18 +363,18 @@ def run_telegram_autopost_logic():
             tg_message += f"🔹 <a href='https://store.steampowered.com/app/{g['id']}'>{html.escape(g['name'])}</a>\n"
         tg_message += "\n"
     if sel_cool_free:
-        tg_message += "🕹 <b>АКТУАЛЬНЫЙ БЕСПЛАТНЫЙ КОНТЕНТ:</b>\n"
+        tg_message += "🕹 <b>БЕСПЛАТНЫЙ КОНТЕНТ (НЕ ПОПСА):</b>\n"
         for g in sel_cool_free:
             tg_message += f"🔹 <a href='https://store.steampowered.com/app/{g['id']}'>{html.escape(g['name'])}</a>\n"
         tg_message += "\n"
     if sel_discounts:
-        tg_message += "💸 <b>ГОРЯЧИЕ СКИДКИ:</b>\n"
+        tg_message += "💸 <b>СКРЫТЫЕ СКИДКИ:</b>\n"
         for g in sel_discounts:
             tg_message += f"🔹 <a href='https://store.steampowered.com/app/{g['id']}'>{html.escape(g['name'])}</a> | {g['discount']}\n"
         tg_message += "\n"
 
     safe_ai_text = html.escape(ai_descriptions)
-    tg_message += f"🤖 <b>ГЕЙМ-АНАЛИЗ ОТ zeptg:</b>\n<i>{safe_ai_text}</i>\n\n👇 Нажми на Web App, чтобы увидеть все региональные цены в реальном времени!"
+    tg_message += f"🤖 <b>ГЕЙМ-АНАЛИЗ ОТ zeptg:</b>\n<i>{safe_ai_text}</i>\n\n👇 Открой Web App, чтобы чекнуть региональные цены!"
 
     try:
         requests.post(
@@ -381,7 +386,7 @@ def run_telegram_autopost_logic():
     except Exception: pass
 
 def telegram_scheduler_worker():
-    time.sleep(10)
+    time.sleep(5)
     try: run_telegram_autopost_logic()
     except Exception: pass
     while True:
@@ -435,9 +440,9 @@ HTML_TEMPLATE = """
         .container { width: 100%; max-width: 850px; margin: 0 auto; padding: 0 15px; }
         .section-title { font-size: 12px; margin: 40px 0 20px 0; text-align: center; line-height: 1.6; }
         .section-title.fresh-title { background-color: var(--green); color: var(--white); border: var(--border-pixel); padding: 10px; display: inline-block; margin: 40px auto 20px auto; left: 50%; transform: translateX(-50%); position: relative; }
-        .game-card { background-color: #fffbf7; border: var(--border-pixel); display: flex; margin-bottom: 25px; min-height: 115px; position: relative; box-shadow: 6px 6px 0px rgba(0,0,0,0.15); transform: scale(1); opacity: 1; }
+        .game-card { background-color: #fffbf7; border: var(--border-pixel); display: flex; margin-bottom: 25px; min-height: 115px; position: relative; box-shadow: 6px 6px 0px rgba(0,0,0,0.15); }
         .game-card.active-card { z-index: 999 !important; }
-        .game-img-wrapper { width: 35%; min-width: 115px; max-width: 200px; border-right: var(--border-pixel); background: var(--gray); flex-shrink: 0; position: relative; }
+        .game-img-wrapper { width: 35%; min-width: 115px; max-width: 200px; border-right: var(--border-pixel); background: var(--gray); flex-shrink: 0; }
         .game-img-wrapper img { width: 100%; height: 100%; object-fit: cover; display: block; }
         .game-info { flex: 1; padding: 14px; display: flex; flex-direction: column; justify-content: space-between; position: relative; min-width: 0; }
         .game-title { font-size: 11px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 30px; font-weight: bold; }
@@ -458,8 +463,6 @@ HTML_TEMPLATE = """
         .sub-menu div { padding: 10px; font-size: 8px; text-align: center; cursor: pointer; border-bottom: 1px dashed var(--text-color); }
         .sub-menu div:hover { background: var(--bg-color); }
         .load-more-btn { background-color: #fffbf7; border: var(--border-pixel); width: 100%; padding: 16px; text-align: center; font-size: 11px; cursor: pointer; margin: 15px 0 50px 0; box-shadow: 4px 4px 0px rgba(0,0,0,0.15); display: block; user-select: none; }
-        .bounce-in-active { animation: smoothIn 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.25) forwards; }
-        @keyframes smoothIn { 0% { transform: scale(0.85); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
     </style>
 </head>
 <body>
@@ -482,7 +485,7 @@ HTML_TEMPLATE = """
         <div class="section-title fresh-title">НОВОЕ ИЗ КАНАЛА!</div>
         <div id="fresh-container">
             {% for entry in fresh_games %}
-            <div class="game-card bounce-in-active" data-id="{{ entry.game.id }}">
+            <div class="game-card" data-id="{{ entry.game.id }}">
                 <div class="game-img-wrapper">
                     <img src="{{ entry.game.img }}" onerror="this.src='https://pub-c5e31b5cdafb419a91624d1024ee2702.r2.dev/mock_steam.png'">
                 </div>
@@ -512,23 +515,23 @@ HTML_TEMPLATE = """
         {% endif %}
 
         <div id="default-game-sections">
-            <div class="section-title">Скидки</div>
+            <div class="section-title">Скрытые Находки & Скидки</div>
             <div id="discounts-container"></div>
             <div id="discounts-btn" class="load-more-btn" onclick="handleLoadMore('discounts')">Ещё?</div>
 
-            <div class="section-title">Топ бесплатных сингл игр</div>
+            <div class="section-title">Свежий Бесплатный Контент</div>
             <div id="free_single-container"></div>
             <div id="free_single-btn" class="load-more-btn" onclick="handleLoadMore('free_single')">Ещё?</div>
 
-            <div class="section-title">Игры со скидками для друзей</div>
+            <div class="section-title">Кооп Скидки</div>
             <div id="coop_disc-container"></div>
             <div id="coop_disc-btn" class="load-more-btn" onclick="handleLoadMore('coop_disc')">Ещё?</div>
 
-            <div class="section-title">Бесплатные кооп игры</div>
+            <div class="section-title">Популярный Кооператив (Бесплатно)</div>
             <div id="coop_free-container"></div>
             <div id="coop_free-btn" class="load-more-btn" onclick="handleLoadMore('coop_free')">Ещё?</div>
 
-            <div class="section-title">Ожидаемые новинки</div>
+            <div class="section-title">Ожидаемые Новинки</div>
             <div id="upcoming-container"></div>
             <div id="upcoming-btn" class="load-more-btn" onclick="handleLoadMore('upcoming')">Ещё?</div>
         </div>
@@ -579,13 +582,14 @@ HTML_TEMPLATE = """
         }
 
         window.addEventListener('click', function() {
-            document.getElementById('currency-wrapper').remove('open');
+            const wrapper = document.getElementById('currency-wrapper');
+            if(wrapper) wrapper.classList.remove('open');
             document.querySelectorAll('.card-context-menu').forEach(m => m.classList.remove('open'));
         });
 
         function createCard(game, uniqueId) {
             const card = document.createElement('div');
-            card.className = 'game-card bounce-in-active';
+            card.className = 'game-card';
             let tagsHtml = '';
             if(Array.isArray(game.tags)) { game.tags.slice(0, 2).forEach(t => { tagsHtml += `<span class="badge">${t}</span>`; }); }
             let priceClass = game.price === "FREE" ? "price price-free" : "price";
@@ -629,7 +633,7 @@ HTML_TEMPLATE = """
                 section.index++;
                 rendered++;
             }
-            itemsToRender.forEach((game, idx) => {
+            itemsToRender.forEach((game) => {
                 const uniqueId = game.id + '-' + Math.random().toString(36).substr(2, 5);
                 const card = createCard(game, uniqueId);
                 container.appendChild(card);
